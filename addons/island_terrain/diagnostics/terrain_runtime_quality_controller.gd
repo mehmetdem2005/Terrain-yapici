@@ -70,6 +70,8 @@ func set_level(value: int) -> Error:
 	_material_runtime.set_runtime_detail_lod_limit(detail_limit)
 	_clipmap.set_shadow_lod_count(shadow_lods)
 	_collision.set_collision_radius_m(collision_radius)
+	if target >= QualityReduction.REDUCED_COLLISION:
+		_collision.trim_pool(4)
 	_current_level = target
 	return OK
 

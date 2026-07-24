@@ -78,19 +78,22 @@ func evaluate(
 	var cooldown_ready: bool = _last_quality_change_msec < 0 \
 		or now_msec - _last_quality_change_msec >= cooldown_msec
 	var quality_delta: int = 0
+	var critical_now: bool = pressure >= Snapshot.PressureLevel.CRITICAL
+	var sustained_pressure: bool = _bad_streak >= policy.consecutive_bad_samples
 
 	if policy.auto_degrade_enabled \
 		and current_quality_reduction < policy.maximum_quality_reduction \
-		and cooldown_ready:
-		var critical_now: bool = pressure >= Snapshot.PressureLevel.CRITICAL
-		var sustained_pressure: bool = _bad_streak >= policy.consecutive_bad_samples
-		if critical_now or sustained_pressure:
-			quality_delta = 1
-			_last_quality_change_msec = now_msec
-			_bad_streak = 0
-	elif policy.auto_recover_enabled \
+		and cooldown_ready \
+		and (critical_now or sustained_pressure):
+		quality_delta = 1
+		_last_quality_change_msec = now_msec
+		_bad_streak = 0
+
+	if quality_delta == 0 \
+		and policy.auto_recover_enabled \
 		and current_quality_reduction > 0 \
 		and cooldown_ready \
+		and pressure == Snapshot.PressureLevel.NORMAL \
 		and _good_streak >= policy.consecutive_good_samples:
 		quality_delta = -1
 		_last_quality_change_msec = now_msec

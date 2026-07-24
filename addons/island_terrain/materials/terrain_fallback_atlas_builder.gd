@@ -14,7 +14,7 @@ static func build_albedo(library: Library) -> ImageTexture:
 	var width: int = library.atlas_columns * tile_size
 	var height: int = library.atlas_rows * tile_size
 	var image := Image.create_empty(width, height, true, Image.FORMAT_RGBA8)
-	image.fill(Color(0.45, 0.45, 0.45, 1.0))
+	image.fill(Color(0.78, 0.78, 0.78, 1.0))
 	var layer_index: int = 0
 	for layer in library.all_layers():
 		_draw_layer(image, layer, layer_index, library.atlas_columns, tile_size)
@@ -31,22 +31,17 @@ static func _draw_layer(
 	tile_size: int
 ) -> void:
 	var slot_x: int = layer.atlas_slot % columns
-	var slot_y: int = layer.atlas_slot / columns
+	var slot_y: int = floori(float(layer.atlas_slot) / float(columns))
 	var origin := Vector2i(slot_x * tile_size, slot_y * tile_size)
-	var gutter: int = maxi(2, tile_size / 16)
+	var gutter: int = maxi(2, floori(float(tile_size) / 16.0))
 	for local_y in range(tile_size):
 		for local_x in range(tile_size):
 			var sample_x: int = clampi(local_x, gutter, tile_size - gutter - 1)
 			var sample_y: int = clampi(local_y, gutter, tile_size - gutter - 1)
 			var noise: float = _hash_noise(sample_x, sample_y, layer_index + 17)
 			var pattern: float = _layer_pattern(layer_index, sample_x, sample_y, noise)
-			var brightness: float = clampf(0.82 + pattern * 0.30, 0.58, 1.18)
-			var color := Color(
-				clampf(layer.tint.r * brightness, 0.0, 1.0),
-				clampf(layer.tint.g * brightness, 0.0, 1.0),
-				clampf(layer.tint.b * brightness, 0.0, 1.0),
-				1.0
-			)
+			var brightness: float = clampf(0.82 + pattern * 0.30, 0.58, 1.0)
+			var color := Color(brightness, brightness, brightness, 1.0)
 			image.set_pixelv(origin + Vector2i(local_x, local_y), color)
 
 

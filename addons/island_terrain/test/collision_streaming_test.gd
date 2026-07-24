@@ -11,6 +11,10 @@ var _service: CollisionService
 
 
 func _init() -> void:
+	call_deferred("_run_tests")
+
+
+func _run_tests() -> void:
 	_root = Node3D.new()
 	_root.position.y = 10.0
 	get_root().add_child(_root)
@@ -48,7 +52,6 @@ func _setup_service() -> void:
 	manifest.max_height_m = 100.0
 	var coordinates := Coordinates.new(manifest)
 	_target.position = Vector3.ZERO
-	_target.force_update_transform()
 	_service.configure(
 		manifest,
 		coordinates,
@@ -80,14 +83,12 @@ func _test_patch_shape() -> void:
 func _test_patch_movement() -> void:
 	_check(_service.get_patch_shape(Vector2i(4, 4)) != null, "initial center patch is missing; active=%s" % str(_active_coords()))
 	_target.position = Vector3(80.0, 0.0, 0.0)
-	_target.force_update_transform()
 	_service.refresh_now()
 	_service.process_pending_immediately()
 	_check(_service.active_patch_count() > 0, "moving target removed all collision patches")
 	_check(_service.get_patch_shape(Vector2i(4, 4)) == null, "old collision patch remained active; active=%s" % str(_active_coords()))
 	_check(_service.get_patch_shape(Vector2i(6, 4)) != null, "new target collision patch was not activated; active=%s" % str(_active_coords()))
 	_target.position = Vector3.ZERO
-	_target.force_update_transform()
 	_service.refresh_now()
 	_service.process_pending_immediately()
 	_check(_service.get_patch_shape(Vector2i(4, 4)) != null, "returning target did not restore center patch; active=%s" % str(_active_coords()))
@@ -99,7 +100,7 @@ func _test_dirty_rebuild_queue() -> void:
 
 
 func _active_coords() -> Array:
-	return _service._active_patches.keys()
+	return _service.active_patch_coords()
 
 
 func _selected_case() -> String:

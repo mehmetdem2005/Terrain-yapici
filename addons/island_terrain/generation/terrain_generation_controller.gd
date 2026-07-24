@@ -16,14 +16,21 @@ signal generation_cancelled
 var _manifest: Manifest
 var _budget: Budget
 var _profile: Profile
+var _resident_memory_provider: Callable
 var _job: Job
 var _running: bool = false
 
 
-func configure(manifest: Manifest, budget: Budget, profile: Profile) -> void:
+func configure(
+	manifest: Manifest,
+	budget: Budget,
+	profile: Profile,
+	resident_memory_provider: Callable = Callable()
+) -> void:
 	_manifest = manifest
 	_budget = budget
 	_profile = profile
+	_resident_memory_provider = resident_memory_provider
 
 
 func start(resolution: int) -> Error:
@@ -31,6 +38,23 @@ func start(resolution: int) -> Error:
 		return ERR_UNCONFIGURED
 	if _profile == null:
 		_profile = Profile.new()
+	var resident_bytes: int = 0
+	if _resident_memory_provider.is_valid():
+		resident_bytes = maxi(0, int(_resident_memory_provider.call()))
+	if not _budget.can_start_generation(resolution, resident_bytes, true):
+		var required_bytes: int = resident_bytes \
+			+ _budget.estimated_generation_peak_bytes(resolution) \
+			+ _budget.estimated_material_metadata_peak_bytes(resolution)
+		var message := (
+			"Generation allocation preflight rejected %d²: estimated %d MB exceeds the %d MB safe terrain envelope" \
+			% [
+				resolution,
+				ceili(float(required_bytes) / float(1024 * 1024)),
+				floori(float(_budget.safe_terrain_ram_bytes()) / float(1024 * 1024)),
+			]
+		)
+		generation_failed.emit(message)
+		return ERR_OUT_OF_MEMORY
 	if _job != null and _running:
 		_job.cancel()
 	_job = Job.new()

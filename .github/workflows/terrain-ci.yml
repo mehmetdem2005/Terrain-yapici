@@ -69,6 +69,22 @@ jobs:
       - name: Material facade tests
         run: ./godot --headless --path . --script addons/island_terrain/test/material_facade_test.gd
 
+      - name: Region material paint pipeline tests
+        run: |
+          if [ -f addons/island_terrain/test/material_paint_pipeline_test.gd ]; then
+            ./godot --headless --path . --script addons/island_terrain/test/material_paint_pipeline_test.gd
+          else
+            echo "Region material paint pipeline is not present on this ref; skipping."
+          fi
+
+      - name: Region material paint facade tests
+        run: |
+          if [ -f addons/island_terrain/test/material_paint_facade_test.gd ]; then
+            ./godot --headless --path . --script addons/island_terrain/test/material_paint_facade_test.gd
+          else
+            echo "Region material paint facade is not present on this ref; skipping."
+          fi
+
       - name: Production hardening tests
         run: ./godot --headless --path . --script addons/island_terrain/test/production_hardening_test.gd
 

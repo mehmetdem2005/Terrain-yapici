@@ -151,12 +151,19 @@ void fragment() {
 	float biome = metadata.r * 7.0;
 	float moisture = metadata.g;
 	float river = metadata.b;
+	float elevation_normalized = clamp(
+		(terrain_height_m - sea_level_m) / max(max_height_m, 0.001),
+		0.0,
+		1.0
+	);
 
-	float sand_weight = max(biome_match(biome, 1.0), smoothstep(0.0, 0.075, terrain_height_m - sea_level_m) * (1.0 - smoothstep(0.075, 0.13, terrain_height_m - sea_level_m)));
+	float beach_band = smoothstep(0.0, 0.035, elevation_normalized)
+		* (1.0 - smoothstep(0.035, 0.075, elevation_normalized));
+	float sand_weight = max(biome_match(biome, 1.0), beach_band);
 	float grass_weight = max(biome_match(biome, 2.0), biome_match(biome, 5.0) * 0.45);
 	float forest_weight = biome_match(biome, 3.0) * smoothstep(0.34, 0.62, moisture);
 	float wetland_weight = max(biome_match(biome, 4.0), river * smoothstep(0.20, 0.70, moisture));
-	float mountain_weight = max(biome_match(biome, 6.0), smoothstep(0.64, 0.88, (terrain_height_m - sea_level_m) / max(max_height_m, 0.001)));
+	float mountain_weight = max(biome_match(biome, 6.0), smoothstep(0.64, 0.88, elevation_normalized));
 	float rock_weight = max(biome_match(biome, 7.0), smoothstep(0.22, 0.70, terrain_slope));
 
 	vec3 weights = vec3(sand_weight, grass_weight, forest_weight);
@@ -181,7 +188,7 @@ void fragment() {
 	albedo += layer_color(rock_tint, rock_slot, rock_meters_per_tile) * rock_weight;
 	albedo += layer_color(mountain_tint, mountain_slot, mountain_meters_per_tile) * mountain_weight;
 
-	float fallback_elevation = smoothstep(0.10, 0.72, (terrain_height_m - sea_level_m) / max(max_height_m, 0.001));
+	float fallback_elevation = smoothstep(0.10, 0.72, elevation_normalized);
 	vec3 fallback_color = mix(grass_tint, mountain_tint, fallback_elevation);
 	fallback_color = mix(fallback_color, rock_tint, smoothstep(0.28, 0.72, terrain_slope));
 	float metadata_mix = has_metadata_texture ? metadata_blend_strength : 0.0;

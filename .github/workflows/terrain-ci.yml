@@ -44,3 +44,6 @@ jobs:
 
       - name: Sculpt pipeline tests
         run: ./godot --headless --path . --script addons/island_terrain/test/sculpt_pipeline_test.gd
+
+      - name: Collision streaming tests
+        run: ./godot --headless --path . --script addons/island_terrain/test/collision_streaming_test.gd

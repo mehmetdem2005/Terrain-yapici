@@ -26,6 +26,12 @@ var _configured: bool = false
 var _enabled: bool = true
 
 
+func _ready() -> void:
+	set_process(_configured and _enabled)
+	if _configured and _enabled:
+		call_deferred("refresh_now")
+
+
 func configure(
 	manifest: Manifest,
 	coordinates: Coordinates,
@@ -48,8 +54,8 @@ func configure(
 	_update_interval_s = clampf(update_interval_s, 0.05, 1.0)
 	_configured = _height_sampler.is_valid() and _terrain_base_y_sampler.is_valid()
 	set_process(_configured and _enabled)
-	if _configured:
-		refresh_now()
+	if _configured and _enabled and is_inside_tree():
+		call_deferred("refresh_now")
 
 
 func set_enabled(value: bool) -> void:
@@ -57,18 +63,19 @@ func set_enabled(value: bool) -> void:
 	set_process(_configured and _enabled)
 	if not _enabled:
 		_deactivate_all()
-	else:
-		refresh_now()
+	elif is_inside_tree():
+		call_deferred("refresh_now")
 
 
 func set_tracking_target(target: Node3D) -> void:
 	_tracking_target = target
 	_last_target_position = Vector3.INF
-	refresh_now()
+	if is_inside_tree():
+		call_deferred("refresh_now")
 
 
 func refresh_now() -> void:
-	if not _configured or not _enabled:
+	if not _configured or not _enabled or not is_inside_tree():
 		return
 	var target_position: Vector3 = _resolve_target_position()
 	if target_position == Vector3.INF:
@@ -111,6 +118,10 @@ func queue_transaction(transaction: EditTransaction) -> void:
 
 func active_patch_count() -> int:
 	return _active_patches.size()
+
+
+func active_patch_coords() -> Array:
+	return _active_patches.keys()
 
 
 func pooled_patch_count() -> int:
@@ -170,14 +181,19 @@ func _refresh_desired_patches(target_position: Vector3) -> void:
 			) > _collision_radius_m + float(_patch_size_m) * 0.71:
 				continue
 			desired[coord] = true
-			if not _active_patches.has(coord):
-				_activate_patch(coord)
 
+	# Retire old bodies before acquiring new ones so the pool is reused within
+	# the same refresh instead of temporarily growing on every patch boundary.
 	var active_coords: Array = _active_patches.keys()
 	for untyped_coord in active_coords:
-		var coord: Vector2i = untyped_coord
-		if not desired.has(coord):
-			_deactivate_patch(coord)
+		var active_coord: Vector2i = untyped_coord
+		if not desired.has(active_coord):
+			_deactivate_patch(active_coord)
+
+	for untyped_coord in desired.keys():
+		var desired_coord: Vector2i = untyped_coord
+		if not _active_patches.has(desired_coord):
+			_activate_patch(desired_coord)
 
 
 func _activate_patch(coord: Vector2i) -> void:
@@ -269,8 +285,13 @@ func _build_patch(coord: Vector2i) -> void:
 
 func _resolve_target_position() -> Vector3:
 	if is_instance_valid(_tracking_target):
+		if not _tracking_target.is_inside_tree():
+			return Vector3.INF
 		return _tracking_target.global_position
-	var camera: Camera3D = get_viewport().get_camera_3d()
+	var viewport: Viewport = get_viewport()
+	if viewport == null:
+		return Vector3.INF
+	var camera: Camera3D = viewport.get_camera_3d()
 	return camera.global_position if is_instance_valid(camera) else Vector3.INF
 
 

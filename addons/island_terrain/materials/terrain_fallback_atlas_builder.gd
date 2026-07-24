@@ -53,7 +53,9 @@ static func _layer_pattern(
 ) -> float:
 	match layer_index:
 		0:
-			return noise * 0.55 + _hash_noise(x / 3, y / 3, 91) * 0.20
+			var coarse_x: int = floori(float(x) / 3.0)
+			var coarse_y: int = floori(float(y) / 3.0)
+			return noise * 0.55 + _hash_noise(coarse_x, coarse_y, 91) * 0.20
 		1:
 			var blade: float = 0.18 if (x * 3 + y * 5) % 17 == 0 else 0.0
 			return noise * 0.58 + blade

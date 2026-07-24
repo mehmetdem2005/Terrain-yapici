@@ -33,20 +33,27 @@ jobs:
         shell: bash
         run: |
           set +e
+          set -o pipefail
           : > validation.log
-          ./godot --headless --path . --editor --quit-after 3 2>&1 | tee -a validation.log
-          code=$?
+
+          run_godot() {
+            ./godot "$@" 2>&1 | tee -a validation.log
+            return ${PIPESTATUS[0]}
+          }
+
+          code=0
+          run_godot --headless --path . --editor --quit-after 3 || code=$?
           if [ "$code" -eq 0 ]; then
-            ./godot --headless --path . --script addons/island_terrain/test/material_paint_pipeline_test.gd 2>&1 | tee -a validation.log
-            code=$?
+            run_godot --headless --path . --script addons/island_terrain/test/material_paint_pipeline_test.gd || code=$?
+          fi
+          if [ "$code" -eq 0 ] && [ -f addons/island_terrain/test/material_paint_facade_test.gd ]; then
+            run_godot --headless --path . --script addons/island_terrain/test/material_paint_facade_test.gd || code=$?
           fi
           if [ "$code" -eq 0 ]; then
-            ./godot --headless --path . --script addons/island_terrain/test/material_facade_test.gd 2>&1 | tee -a validation.log
-            code=$?
+            run_godot --headless --path . --script addons/island_terrain/test/material_facade_test.gd || code=$?
           fi
           if [ "$code" -eq 0 ]; then
-            ./godot --headless --path . --script addons/island_terrain/test/hardening_facade_test.gd 2>&1 | tee -a validation.log
-            code=$?
+            run_godot --headless --path . --script addons/island_terrain/test/hardening_facade_test.gd || code=$?
           fi
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
@@ -59,15 +66,19 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const log = fs.existsSync('validation.log')
-              ? fs.readFileSync('validation.log', 'utf8').split('\n').slice(-120).join('\n')
-              : 'validation.log bulunamadı';
             const passed = process.env.EXIT_CODE === '0';
+            let body = passed
+              ? '✅ Hardened region paint validation passed: parser, paint pipeline, paint facade, material facade and hardening facade are green.'
+              : '❌ Hardened region paint validation failed.';
+            if (!passed && fs.existsSync('validation.log')) {
+              const tail = fs.readFileSync('validation.log', 'utf8').split('\n').slice(-60).join('\n');
+              body += `\n\n\`\`\`text\n${tail.slice(0, 20000)}\n\`\`\``;
+            }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `${passed ? '✅' : '❌'} Hardened region paint validation ${passed ? 'passed' : 'failed'}.\n\n\`\`\`text\n${log.slice(0, 50000)}\n\`\`\``
+              body
             });
 
       - name: Enforce validation result

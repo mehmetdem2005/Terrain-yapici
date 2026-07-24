@@ -59,6 +59,7 @@ func cancel() -> void:
 	_stage = Stage.CANCELLED
 	_rgba_data = PackedByteArray()
 	_result = null
+	_budget = null
 	set_process(false)
 	build_cancelled.emit()
 
@@ -138,6 +139,8 @@ func _finalize_texture() -> void:
 		_fail("failed to create terrain metadata texture")
 		return
 	_rgba_data = PackedByteArray()
+	_result = null
+	_budget = null
 	_stage = Stage.COMPLETE
 	set_process(false)
 	build_progress.emit(1.0)
@@ -148,5 +151,7 @@ func _fail(message: String) -> void:
 	_error_message = message
 	_stage = Stage.FAILED
 	_rgba_data = PackedByteArray()
+	_result = null
+	_budget = null
 	set_process(false)
 	build_failed.emit(message)

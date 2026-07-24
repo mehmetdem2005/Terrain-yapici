@@ -24,12 +24,12 @@ func _init() -> void:
 		"shape":
 			_test_patch_shape()
 		"movement":
-			_test_patch_movement_and_pooling()
+			_test_patch_movement()
 		"dirty":
 			_test_dirty_rebuild_queue()
 		_:
 			_test_patch_shape()
-			_test_patch_movement_and_pooling()
+			_test_patch_movement()
 			_test_dirty_rebuild_queue()
 	if _failures.is_empty():
 		print("IslandTerrain collision streaming test %s: PASS" % selected_case)
@@ -76,16 +76,18 @@ func _test_patch_shape() -> void:
 	_check(is_equal_approx(shape.map_data[16 * 33 + 16], 32.0), "collision height was not converted to body-local Y")
 
 
-func _test_patch_movement_and_pooling() -> void:
-	var first_active: int = _service.active_patch_count()
+func _test_patch_movement() -> void:
+	_check(_service.get_patch_shape(Vector2i(4, 4)) != null, "initial center patch is missing")
 	_target.position = Vector3(80.0, 0.0, 0.0)
 	_service.refresh_now()
 	_service.process_pending_immediately()
 	_check(_service.active_patch_count() > 0, "moving target removed all collision patches")
-	_check(
-		_service.pooled_patch_count() > 0 or _service.active_patch_count() != first_active,
-		"collision patches were not recycled after target movement"
-	)
+	_check(_service.get_patch_shape(Vector2i(4, 4)) == null, "old collision patch remained active after target moved away")
+	_check(_service.get_patch_shape(Vector2i(6, 4)) != null, "new target collision patch was not activated")
+	_target.position = Vector3.ZERO
+	_service.refresh_now()
+	_service.process_pending_immediately()
+	_check(_service.get_patch_shape(Vector2i(4, 4)) != null, "returning target did not restore center collision patch")
 
 
 func _test_dirty_rebuild_queue() -> void:

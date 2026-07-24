@@ -93,6 +93,14 @@ jobs:
             echo "Foliage planner is not present on this ref; skipping."
           fi
 
+      - name: Foliage streamer tests
+        run: |
+          if [ -f addons/island_terrain/test/foliage_streamer_test.gd ]; then
+            ./godot --headless --path . --script addons/island_terrain/test/foliage_streamer_test.gd
+          else
+            echo "Foliage streamer is not present on this ref; skipping."
+          fi
+
       - name: Production hardening tests
         run: ./godot --headless --path . --script addons/island_terrain/test/production_hardening_test.gd
 

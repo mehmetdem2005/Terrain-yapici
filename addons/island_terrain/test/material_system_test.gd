@@ -55,12 +55,15 @@ func _start_test() -> void:
 
 	var result := GenerationResult.new()
 	result.initialize(65, 9917)
+	var center_x: int = floori(float(result.resolution) * 0.5)
 	for y in range(result.resolution):
 		for x in range(result.resolution):
 			var index: int = y * result.resolution + x
-			result.biome_data[index] = (x / 9 + y / 11) % GenerationResult.Biome.size()
+			var biome_x: int = floori(float(x) / 9.0)
+			var biome_y: int = floori(float(y) / 11.0)
+			result.biome_data[index] = (biome_x + biome_y) % GenerationResult.Biome.size()
 			result.moisture_data[index] = clampi((x * 4 + y * 2) % 256, 0, 255)
-			result.river_mask[index] = 255 if x == result.resolution / 2 else 0
+			result.river_mask[index] = 255 if x == center_x else 0
 			result.flow_accumulation[index] = 1.0 + float(x * y)
 
 	var budget := Budget.create_for_profile(Budget.DeviceProfile.LOW)

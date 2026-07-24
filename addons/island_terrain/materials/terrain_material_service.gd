@@ -46,11 +46,11 @@ func library() -> Library:
 
 
 func _resolve_backend() -> void:
+	var requested_backend: int = _library.backend
 	_effective_backend = _library.effective_backend()
 	_generated_atlas = null
-	if _effective_backend == Library.Backend.TEXTURE_ARRAY and _library.albedo_array == null:
-		push_warning("IT-W10: Texture array backend has no albedo array; falling back to atlas")
-		_effective_backend = Library.Backend.ATLAS
+	if requested_backend == Library.Backend.TEXTURE_ARRAY and _library.albedo_array == null:
+		push_warning("IT-W10: Texture array backend has no albedo array; using the mobile-safe fallback backend")
 	if _effective_backend == Library.Backend.ATLAS \
 		and _library.albedo_atlas == null \
 		and _library.generate_fallback_atlas:

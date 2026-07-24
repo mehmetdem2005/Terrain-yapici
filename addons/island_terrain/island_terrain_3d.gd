@@ -47,6 +47,7 @@ var _edit_service: EditService
 var _terrain_material: ShaderMaterial
 var _height_texture: ImageTexture
 var _macro_height_image: Image
+var _base_macro_height_image: Image
 var _preview_values := PackedFloat32Array()
 var _preview_resolution: int = 0
 var _preview_row: int = 0
@@ -55,6 +56,7 @@ var _preview_noise_b: FastNoiseLite
 var _preview_generation_active: bool = false
 var _initialized: bool = false
 var _transform_warning_emitted: bool = false
+var _has_height_edits: bool = false
 
 
 func _ready() -> void:
@@ -112,8 +114,12 @@ func is_initialized() -> bool:
 
 
 func request_preview_rebuild() -> void:
-	if _initialized:
-		_schedule_preview_generation()
+	if not _initialized:
+		return
+	if _has_height_edits:
+		push_warning("IT-W08: Preview rebuild is blocked after terrain edits to protect the immutable base surface")
+		return
+	_schedule_preview_generation()
 
 
 func flush_pending_saves(max_regions: int = -1) -> Error:
@@ -168,6 +174,7 @@ func apply_sculpt_command(command: SculptCommand) -> EditTransaction:
 		return null
 	var transaction: EditTransaction = _edit_service.apply_sculpt(command)
 	if transaction != null and not transaction.is_empty():
+		_has_height_edits = true
 		terrain_edited.emit(transaction)
 	return transaction
 
@@ -177,13 +184,36 @@ func apply_edit_transaction_before(transaction: EditTransaction) -> Error:
 
 
 func apply_edit_transaction_after(transaction: EditTransaction) -> Error:
-	return _edit_service.apply_transaction_after(transaction) if _edit_service != null else ERR_UNCONFIGURED
+	if _edit_service == null:
+		return ERR_UNCONFIGURED
+	var error: Error = _edit_service.apply_transaction_after(transaction)
+	if error == OK:
+		_has_height_edits = true
+	return error
 
 
 func height_sample_from_world_y(world_y: float) -> float:
 	if manifest == null:
 		return 0.0
 	return clampf(world_y - global_position.y - manifest.sea_level_m, 0.0, manifest.max_height_m)
+
+
+func get_base_height_sample_at_world(world_position: Vector3) -> float:
+	if _base_macro_height_image == null or _base_macro_height_image.is_empty() or manifest == null:
+		return 0.0
+	var terrain_origin := Vector2(global_position.x, global_position.z)
+	var half: float = float(manifest.world_size_m) * 0.5
+	var uv := Vector2(
+		(world_position.x - terrain_origin.x + half) / float(manifest.world_size_m),
+		(world_position.z - terrain_origin.y + half) / float(manifest.world_size_m)
+	)
+	if uv.x < 0.0 or uv.y < 0.0 or uv.x > 1.0 or uv.y > 1.0:
+		return 0.0
+	var pixel := Vector2i(
+		clampi(roundi(uv.x * float(_base_macro_height_image.get_width() - 1)), 0, _base_macro_height_image.get_width() - 1),
+		clampi(roundi(uv.y * float(_base_macro_height_image.get_height() - 1)), 0, _base_macro_height_image.get_height() - 1)
+	)
+	return _base_macro_height_image.get_pixelv(pixel).r * manifest.max_height_m
 
 
 func get_height_at_world(world_position: Vector3) -> float:
@@ -276,6 +306,7 @@ func _initialize_terrain() -> void:
 	_terrain_material = ShaderMaterial.new()
 	_terrain_material.shader = TERRAIN_SHADER
 	_height_texture = _create_flat_height_texture()
+	var base_sampler := Callable(self, "get_base_height_sample_at_world")
 
 	var sync_node: Node = get_node_or_null("__MacroHeightSync")
 	if sync_node != null:
@@ -293,7 +324,8 @@ func _initialize_terrain() -> void:
 		_region_repository,
 		memory_budget,
 		_macro_height_image,
-		_height_texture
+		_height_texture,
+		base_sampler
 	)
 
 	var clipmap_node: Node = get_node_or_null("__IslandClipmap")
@@ -307,7 +339,13 @@ func _initialize_terrain() -> void:
 		_clipmap.name = "__IslandClipmap"
 		add_child(_clipmap, false, Node.INTERNAL_MODE_BACK)
 	_clipmap.configure(manifest, memory_budget, _terrain_material, _height_texture)
-	_edit_service = EditService.new(manifest, _coordinate_system, _region_repository, _macro_sync)
+	_edit_service = EditService.new(
+		manifest,
+		_coordinate_system,
+		_region_repository,
+		_macro_sync,
+		base_sampler
+	)
 	_initialized = true
 	set_process(true)
 	if generate_preview_on_ready:
@@ -344,6 +382,7 @@ func _create_flat_height_texture() -> ImageTexture:
 	image.fill(Color(0.0, 0.0, 0.0, 1.0))
 	image.generate_mipmaps()
 	_macro_height_image = image
+	_base_macro_height_image = image.duplicate()
 	return ImageTexture.create_from_image(image)
 
 
@@ -415,6 +454,7 @@ func _finalize_preview_generation() -> void:
 		return
 	image.generate_mipmaps()
 	_macro_height_image = image
+	_base_macro_height_image = image.duplicate()
 	_height_texture = ImageTexture.create_from_image(image)
 	_clipmap.set_height_texture(_height_texture)
 	if _macro_sync != null:
@@ -438,9 +478,10 @@ func _set_device_profile(value: int) -> void:
 			_region_repository,
 			memory_budget,
 			_macro_height_image,
-			_height_texture
+			_height_texture,
+			Callable(self, "get_base_height_sample_at_world")
 		)
-		_schedule_preview_generation()
+		request_preview_rebuild()
 
 
 func _set_rebuild_preview_requested(value: bool) -> void:

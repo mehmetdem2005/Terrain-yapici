@@ -3,6 +3,7 @@ render_mode cull_back, depth_draw_opaque, diffuse_burley, specular_schlick_ggx;
 
 uniform sampler2D height_texture : filter_linear_mipmap, repeat_disable;
 uniform sampler2D terrain_metadata_texture : filter_linear_mipmap, repeat_disable;
+uniform sampler2D terrain_override_texture : filter_linear_mipmap, repeat_disable;
 uniform sampler2D albedo_atlas : filter_linear_mipmap, repeat_disable;
 uniform sampler2DArray albedo_array : filter_linear_mipmap, repeat_enable;
 
@@ -17,6 +18,7 @@ instance uniform float skirt_depth_m = 8.0;
 
 uniform int material_backend = 0;
 uniform bool has_metadata_texture = false;
+uniform bool has_override_texture = false;
 uniform bool has_albedo_atlas = false;
 uniform bool has_albedo_array = false;
 uniform vec2 atlas_grid = vec2(4.0, 2.0);
@@ -77,8 +79,8 @@ float sample_height(vec2 terrain_uv, float mip_level) {
 }
 
 
-float biome_match(float biome, float target) {
-	return 1.0 - smoothstep(0.30, 0.72, abs(biome - target));
+float channel_match(float value, float target) {
+	return 1.0 - smoothstep(0.30, 0.72, abs(value - target));
 }
 
 
@@ -147,8 +149,12 @@ void fragment() {
 	if (has_metadata_texture) {
 		metadata = texture(terrain_metadata_texture, terrain_uv_data);
 	}
+	vec4 override_data = vec4(0.0);
+	if (has_override_texture) {
+		override_data = texture(terrain_override_texture, terrain_uv_data);
+	}
 
-	float biome = metadata.r * 7.0;
+	float biome = mix(metadata.r * 7.0, override_data.r * 7.0, override_data.g);
 	float moisture = metadata.g;
 	float river = metadata.b;
 	float elevation_normalized = clamp(
@@ -159,21 +165,39 @@ void fragment() {
 
 	float beach_band = smoothstep(0.0, 0.035, elevation_normalized)
 		* (1.0 - smoothstep(0.035, 0.075, elevation_normalized));
-	float sand_weight = max(biome_match(biome, 1.0), beach_band);
-	float grass_weight = max(biome_match(biome, 2.0), biome_match(biome, 5.0) * 0.45);
-	float forest_weight = biome_match(biome, 3.0) * smoothstep(0.34, 0.62, moisture);
-	float wetland_weight = max(biome_match(biome, 4.0), river * smoothstep(0.20, 0.70, moisture));
-	float mountain_weight = max(biome_match(biome, 6.0), smoothstep(0.64, 0.88, elevation_normalized));
-	float rock_weight = max(biome_match(biome, 7.0), smoothstep(0.22, 0.70, terrain_slope));
+	float sand_weight = max(channel_match(biome, 1.0), beach_band);
+	float grass_weight = max(channel_match(biome, 2.0), channel_match(biome, 5.0) * 0.45);
+	float forest_weight = channel_match(biome, 3.0) * smoothstep(0.34, 0.62, moisture);
+	float wetland_weight = max(channel_match(biome, 4.0), river * smoothstep(0.20, 0.70, moisture));
+	float mountain_weight = max(channel_match(biome, 6.0), smoothstep(0.64, 0.88, elevation_normalized));
+	float rock_weight = max(channel_match(biome, 7.0), smoothstep(0.22, 0.70, terrain_slope));
 
-	vec3 weights = vec3(sand_weight, grass_weight, forest_weight);
-	vec3 weights_b = vec3(wetland_weight, rock_weight, mountain_weight);
-	float total_weight = dot(weights, vec3(1.0)) + dot(weights_b, vec3(1.0));
-	if (total_weight < 0.001) {
+	float base_total = sand_weight + grass_weight + forest_weight
+		+ wetland_weight + rock_weight + mountain_weight;
+	if (base_total < 0.001) {
 		grass_weight = 1.0;
-		total_weight = 1.0;
+		base_total = 1.0;
 	}
-	float inverse_weight = 1.0 / total_weight;
+	float inverse_base = 1.0 / base_total;
+	sand_weight *= inverse_base;
+	grass_weight *= inverse_base;
+	forest_weight *= inverse_base;
+	wetland_weight *= inverse_base;
+	rock_weight *= inverse_base;
+	mountain_weight *= inverse_base;
+
+	float manual_material = override_data.b * 5.0;
+	float manual_strength = override_data.a;
+	sand_weight = mix(sand_weight, channel_match(manual_material, 0.0), manual_strength);
+	grass_weight = mix(grass_weight, channel_match(manual_material, 1.0), manual_strength);
+	forest_weight = mix(forest_weight, channel_match(manual_material, 2.0), manual_strength);
+	wetland_weight = mix(wetland_weight, channel_match(manual_material, 3.0), manual_strength);
+	rock_weight = mix(rock_weight, channel_match(manual_material, 4.0), manual_strength);
+	mountain_weight = mix(mountain_weight, channel_match(manual_material, 5.0), manual_strength);
+
+	float total_weight = sand_weight + grass_weight + forest_weight
+		+ wetland_weight + rock_weight + mountain_weight;
+	float inverse_weight = 1.0 / max(total_weight, 0.001);
 	sand_weight *= inverse_weight;
 	grass_weight *= inverse_weight;
 	forest_weight *= inverse_weight;
@@ -192,7 +216,7 @@ void fragment() {
 	vec3 fallback_color = mix(grass_tint, mountain_tint, fallback_elevation);
 	fallback_color = mix(fallback_color, rock_tint, smoothstep(0.28, 0.72, terrain_slope));
 	float metadata_mix = has_metadata_texture ? metadata_blend_strength : 0.0;
-	ALBEDO = mix(fallback_color, albedo, metadata_mix);
+	ALBEDO = mix(fallback_color, albedo, max(metadata_mix, manual_strength));
 
 	ROUGHNESS = sand_roughness * sand_weight
 		+ grass_roughness * grass_weight

@@ -194,9 +194,11 @@ func get_material_metadata_texture() -> ImageTexture:
 
 
 func get_material_working_memory_bytes() -> int:
-	var metadata_bytes: int = _material_runtime.estimated_working_memory_bytes() if _material_runtime != null else 0
-	var override_bytes: int = _material_override_sync.estimated_memory_bytes() if _material_override_sync != null else 0
-	return metadata_bytes + override_bytes
+	return _material_runtime.estimated_working_memory_bytes() if _material_runtime != null else 0
+
+
+func get_material_resident_memory_bytes() -> int:
+	return _material_override_sync.estimated_memory_bytes() if _material_override_sync != null else 0
 
 
 func get_material_override_texture() -> ImageTexture:
@@ -943,7 +945,9 @@ func _metric_pending_collision_builds() -> int:
 
 
 func _metric_resident_memory_bytes() -> int:
-	return _metric_region_cache_bytes() + get_material_working_memory_bytes()
+	return _metric_region_cache_bytes() \
+		+ get_material_working_memory_bytes() \
+		+ get_material_resident_memory_bytes()
 
 
 func _release_reclaimable_memory() -> void:

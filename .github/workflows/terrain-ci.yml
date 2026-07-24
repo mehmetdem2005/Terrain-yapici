@@ -16,36 +16,9 @@ on:
       - ".github/workflows/terrain-ci.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-hardening-facade:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/production-hardening'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout PR head
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Apply guarded facade patch
-        run: |
-          if grep -q 'const HealthPolicy = preload(' addons/island_terrain/island_terrain_3d.gd; then
-            echo 'Facade already patched.'
-            exit 0
-          fi
-          git fetch origin main
-          git show origin/main:.github/scripts/patch_hardening_facade.py > /tmp/patch_hardening_facade.py
-          python3 /tmp/patch_hardening_facade.py
-          git diff --check
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add addons/island_terrain/island_terrain_3d.gd
-          git commit -m "Integrate runtime terrain health protection"
-          git push origin HEAD:${{ github.head_ref }}
-
   godot-headless:
     runs-on: ubuntu-latest
     timeout-minutes: 12

@@ -2,7 +2,7 @@
 extends RefCounted
 class_name IslandTerrainConstants
 
-const DATA_FORMAT_VERSION: int = 1
+const DATA_FORMAT_VERSION: int = 2
 const DEFAULT_WORLD_SIZE_M: int = 4096
 const DEFAULT_REGION_SIZE_M: int = 256
 const DEFAULT_REGION_SAMPLES: int = 257
@@ -40,14 +40,12 @@ static func clamp_clipmap_levels(levels: int) -> int:
 
 static func clamp_base_quads(quads: int) -> int:
 	var clamped: int = clampi(quads, MIN_BASE_QUADS, MAX_BASE_QUADS)
-	# Even dimensions keep ring seams symmetric.
 	return clamped if clamped % 2 == 0 else clamped - 1
 
 
 static func safe_macro_resolution(requested: int, editor_hint: bool) -> int:
 	var hard_cap: int = MAX_EDITOR_MACRO_RESOLUTION if editor_hint else MAX_MOBILE_MACRO_RESOLUTION
 	var value: int = clampi(requested, 65, hard_cap)
-	# Height textures use 2^n + 1 dimensions for exact region/LOD alignment.
 	var intervals: int = maxi(64, value - 1)
 	var power: int = 1
 	while power < intervals:

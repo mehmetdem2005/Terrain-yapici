@@ -47,7 +47,6 @@ func _start_test() -> void:
 	_terrain.preview_generation_completed.connect(_on_completed)
 	_terrain.preview_generation_failed.connect(_on_failed)
 	get_root().add_child(_terrain)
-	set_process(true)
 
 
 func _process(_delta: float) -> bool:

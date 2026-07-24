@@ -13,11 +13,16 @@ const CollisionService = preload("res://addons/island_terrain/physics/terrain_co
 const SculptCommand = preload("res://addons/island_terrain/application/terrain_sculpt_command.gd")
 const EditTransaction = preload("res://addons/island_terrain/application/terrain_edit_transaction.gd")
 const EditService = preload("res://addons/island_terrain/application/terrain_edit_service.gd")
+const GenerationProfile = preload("res://addons/island_terrain/generation/terrain_generation_profile.gd")
+const GenerationController = preload("res://addons/island_terrain/generation/terrain_generation_controller.gd")
+const GenerationResult = preload("res://addons/island_terrain/generation/terrain_generation_result.gd")
 const TERRAIN_SHADER = preload("res://addons/island_terrain/rendering/shaders/island_terrain.gdshader")
 
 signal terrain_initialized
 signal preview_generation_progress(progress: float)
+signal preview_generation_stage_changed(stage_name: String)
 signal preview_generation_completed
+signal preview_generation_failed(message: String)
 signal terrain_edited(transaction: EditTransaction)
 
 @export_category("Terrain Data")
@@ -26,12 +31,15 @@ signal terrain_edited(transaction: EditTransaction)
 @export_dir var world_data_root: String = "res://terrain_data/island_01"
 @export var runtime_data_root: String = "user://terrain_data/island_01"
 
+@export_category("Generation")
+@export var generation_profile: GenerationProfile
+@export var generate_preview_on_ready: bool = true
+@export_range(0.1, 1.0, 0.01) var preview_height_scale: float = 0.72
+
 @export_category("Mobile Performance")
 @export_enum("Low", "Balanced", "High", "Editor Preview") var device_profile: int = 1:
 	set = _set_device_profile
 @export var memory_budget: MemoryBudget
-@export var generate_preview_on_ready: bool = true
-@export_range(0.1, 1.0, 0.01) var preview_height_scale: float = 0.72
 @export_range(0, 4, 1) var runtime_shutdown_flush_limit: int = 2
 
 @export_category("Streamed Collision")
@@ -54,17 +62,13 @@ var _region_repository: RegionRepository
 var _clipmap: ClipmapController
 var _macro_sync: MacroHeightSync
 var _collision_service: CollisionService
+var _generation_controller: GenerationController
 var _edit_service: EditService
 var _terrain_material: ShaderMaterial
 var _height_texture: ImageTexture
 var _macro_height_image: Image
 var _base_macro_height_image: Image
-var _preview_values := PackedFloat32Array()
-var _preview_resolution: int = 0
-var _preview_row: int = 0
-var _preview_noise_a: FastNoiseLite
-var _preview_noise_b: FastNoiseLite
-var _preview_generation_active: bool = false
+var _generation_result: GenerationResult
 var _initialized: bool = false
 var _transform_warning_emitted: bool = false
 var _has_height_edits: bool = false
@@ -76,6 +80,8 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	if _generation_controller != null and _generation_controller.is_running():
+		_generation_controller.cancel()
 	if _region_repository == null or _region_repository.dirty_region_count() == 0:
 		return
 	if Engine.is_editor_hint():
@@ -94,8 +100,6 @@ func _exit_tree() -> void:
 
 
 func _process(_delta: float) -> void:
-	if _preview_generation_active:
-		_generate_preview_rows()
 	if _region_repository != null and _region_repository.dirty_region_count() > 0:
 		_region_repository.save_dirty(1)
 
@@ -126,6 +130,27 @@ func is_initialized() -> bool:
 	return _initialized
 
 
+func is_generation_running() -> bool:
+	return _generation_controller != null and _generation_controller.is_running()
+
+
+func get_generation_progress() -> float:
+	return _generation_controller.progress() if _generation_controller != null else 0.0
+
+
+func get_generation_stage_name() -> String:
+	return _generation_controller.stage_name() if _generation_controller != null else "Idle"
+
+
+func get_generation_working_memory_bytes() -> int:
+	return _generation_controller.estimated_working_memory_bytes() \
+		if _generation_controller != null else 0
+
+
+func get_generation_result() -> GenerationResult:
+	return _generation_result
+
+
 func request_preview_rebuild() -> void:
 	if not _initialized:
 		return
@@ -133,6 +158,11 @@ func request_preview_rebuild() -> void:
 		push_warning("IT-W08: Preview rebuild is blocked after terrain edits to protect the immutable base surface")
 		return
 	_schedule_preview_generation()
+
+
+func cancel_preview_generation() -> void:
+	if _generation_controller != null:
+		_generation_controller.cancel()
 
 
 func flush_pending_saves(max_regions: int = -1) -> Error:
@@ -239,18 +269,9 @@ func height_sample_from_world_y(world_y: float) -> float:
 func get_base_height_sample_at_world(world_position: Vector3) -> float:
 	if _base_macro_height_image == null or _base_macro_height_image.is_empty() or manifest == null:
 		return 0.0
-	var terrain_origin := Vector2(global_position.x, global_position.z)
-	var half: float = float(manifest.world_size_m) * 0.5
-	var uv := Vector2(
-		(world_position.x - terrain_origin.x + half) / float(manifest.world_size_m),
-		(world_position.z - terrain_origin.y + half) / float(manifest.world_size_m)
-	)
-	if uv.x < 0.0 or uv.y < 0.0 or uv.x > 1.0 or uv.y > 1.0:
+	var pixel: Vector2i = _world_to_image_pixel(world_position, _base_macro_height_image)
+	if pixel.x < 0:
 		return 0.0
-	var pixel := Vector2i(
-		clampi(roundi(uv.x * float(_base_macro_height_image.get_width() - 1)), 0, _base_macro_height_image.get_width() - 1),
-		clampi(roundi(uv.y * float(_base_macro_height_image.get_height() - 1)), 0, _base_macro_height_image.get_height() - 1)
-	)
 	return _base_macro_height_image.get_pixelv(pixel).r * manifest.max_height_m
 
 
@@ -258,18 +279,9 @@ func get_height_at_world(world_position: Vector3) -> float:
 	var terrain_base_y: float = global_position.y
 	if _macro_height_image == null or manifest == null:
 		return terrain_base_y + manifest.sea_level_m if manifest != null else terrain_base_y
-	var terrain_origin := Vector2(global_position.x, global_position.z)
-	var half: float = float(manifest.world_size_m) * 0.5
-	var uv := Vector2(
-		(world_position.x - terrain_origin.x + half) / float(manifest.world_size_m),
-		(world_position.z - terrain_origin.y + half) / float(manifest.world_size_m)
-	)
-	if uv.x < 0.0 or uv.y < 0.0 or uv.x > 1.0 or uv.y > 1.0:
+	var pixel: Vector2i = _world_to_image_pixel(world_position, _macro_height_image)
+	if pixel.x < 0:
 		return terrain_base_y + manifest.sea_level_m
-	var pixel := Vector2i(
-		clampi(roundi(uv.x * float(_macro_height_image.get_width() - 1)), 0, _macro_height_image.get_width() - 1),
-		clampi(roundi(uv.y * float(_macro_height_image.get_height() - 1)), 0, _macro_height_image.get_height() - 1)
-	)
 	return terrain_base_y + manifest.sea_level_m \
 		+ _macro_height_image.get_pixelv(pixel).r * manifest.max_height_m
 
@@ -281,6 +293,29 @@ func get_normal_at_world(world_position: Vector3, sample_distance_m: float = 1.0
 	var h_d: float = get_height_at_world(world_position - Vector3(0.0, 0.0, d))
 	var h_u: float = get_height_at_world(world_position + Vector3(0.0, 0.0, d))
 	return Vector3(h_l - h_r, d * 2.0, h_d - h_u).normalized()
+
+
+func get_biome_at_world(world_position: Vector3) -> int:
+	var index: int = _generation_index_at_world(world_position)
+	return int(_generation_result.biome_data[index]) \
+		if index >= 0 else GenerationResult.Biome.OCEAN
+
+
+func get_moisture_at_world(world_position: Vector3) -> float:
+	var index: int = _generation_index_at_world(world_position)
+	return float(_generation_result.moisture_data[index]) / 255.0 if index >= 0 else 0.0
+
+
+func get_river_mask_at_world(world_position: Vector3) -> float:
+	var index: int = _generation_index_at_world(world_position)
+	return float(_generation_result.river_mask[index]) / 255.0 if index >= 0 else 0.0
+
+
+func get_flow_accumulation_at_world(world_position: Vector3) -> float:
+	var index: int = _generation_index_at_world(world_position)
+	if index < 0 or _generation_result.flow_accumulation.size() <= index:
+		return 0.0
+	return _generation_result.flow_accumulation[index]
 
 
 func intersect_ray_heightfield(
@@ -333,6 +368,7 @@ func intersect_ray_heightfield(
 func _initialize_terrain() -> void:
 	_ensure_manifest()
 	_ensure_memory_budget()
+	_ensure_generation_profile()
 	var errors: PackedStringArray = manifest.validate()
 	if not errors.is_empty():
 		push_error("IT-001: Manifest validation failed: %s" % "; ".join(errors))
@@ -346,12 +382,32 @@ func _initialize_terrain() -> void:
 	_height_texture = _create_flat_height_texture()
 	var base_sampler := Callable(self, "get_base_height_sample_at_world")
 
+	if not _create_internal_services(base_sampler):
+		return
+
+	_edit_service = EditService.new(
+		manifest,
+		_coordinate_system,
+		_region_repository,
+		_macro_sync,
+		base_sampler
+	)
+	_initialized = true
+	set_process(true)
+	if generate_preview_on_ready:
+		_schedule_preview_generation()
+	else:
+		_configure_collision_service()
+	terrain_initialized.emit()
+
+
+func _create_internal_services(base_sampler: Callable) -> bool:
 	var sync_node: Node = get_node_or_null("__MacroHeightSync")
 	if sync_node != null:
 		_macro_sync = sync_node as MacroHeightSync
 		if _macro_sync == null:
 			push_error("IT-023: Reserved child name __MacroHeightSync is occupied")
-			return
+			return false
 	else:
 		_macro_sync = MacroHeightSync.new()
 		_macro_sync.name = "__MacroHeightSync"
@@ -371,7 +427,7 @@ func _initialize_terrain() -> void:
 		_clipmap = clipmap_node as ClipmapController
 		if _clipmap == null:
 			push_error("IT-011: Reserved child name __IslandClipmap is occupied by an incompatible node")
-			return
+			return false
 	else:
 		_clipmap = ClipmapController.new()
 		_clipmap.name = "__IslandClipmap"
@@ -383,26 +439,40 @@ func _initialize_terrain() -> void:
 		_collision_service = collision_node as CollisionService
 		if _collision_service == null:
 			push_error("IT-026: Reserved child name __TerrainCollision is occupied")
-			return
+			return false
 	else:
 		_collision_service = CollisionService.new()
 		_collision_service.name = "__TerrainCollision"
 		add_child(_collision_service, false, Node.INTERNAL_MODE_BACK)
 
-	_edit_service = EditService.new(
-		manifest,
-		_coordinate_system,
-		_region_repository,
-		_macro_sync,
-		base_sampler
-	)
-	_initialized = true
-	set_process(true)
-	if generate_preview_on_ready:
-		_schedule_preview_generation()
+	var generation_node: Node = get_node_or_null("__TerrainGeneration")
+	if generation_node != null:
+		_generation_controller = generation_node as GenerationController
+		if _generation_controller == null:
+			push_error("IT-030: Reserved child name __TerrainGeneration is occupied")
+			return false
 	else:
-		_configure_collision_service()
-	terrain_initialized.emit()
+		_generation_controller = GenerationController.new()
+		_generation_controller.name = "__TerrainGeneration"
+		add_child(_generation_controller, false, Node.INTERNAL_MODE_BACK)
+	_connect_generation_signals()
+	_generation_controller.configure(manifest, memory_budget, generation_profile)
+	return true
+
+
+func _connect_generation_signals() -> void:
+	var progress_callback := Callable(self, "_on_generation_progress")
+	var completed_callback := Callable(self, "_on_generation_completed")
+	var failed_callback := Callable(self, "_on_generation_failed")
+	var cancelled_callback := Callable(self, "_on_generation_cancelled")
+	if not _generation_controller.generation_progress.is_connected(progress_callback):
+		_generation_controller.generation_progress.connect(progress_callback)
+	if not _generation_controller.generation_completed.is_connected(completed_callback):
+		_generation_controller.generation_completed.connect(completed_callback)
+	if not _generation_controller.generation_failed.is_connected(failed_callback):
+		_generation_controller.generation_failed.connect(failed_callback)
+	if not _generation_controller.generation_cancelled.is_connected(cancelled_callback):
+		_generation_controller.generation_cancelled.connect(cancelled_callback)
 
 
 func _ensure_manifest() -> void:
@@ -429,6 +499,13 @@ func _ensure_memory_budget() -> void:
 	memory_budget.sanitize(Engine.is_editor_hint())
 
 
+func _ensure_generation_profile() -> void:
+	if generation_profile == null:
+		generation_profile = GenerationProfile.new()
+		generation_profile.output_height_scale = preview_height_scale
+	generation_profile.sanitize()
+
+
 func _create_flat_height_texture() -> ImageTexture:
 	var image := Image.create_empty(3, 3, true, Image.FORMAT_RF)
 	image.fill(Color(0.0, 0.0, 0.0, 1.0))
@@ -439,85 +516,55 @@ func _create_flat_height_texture() -> ImageTexture:
 
 
 func _schedule_preview_generation() -> void:
-	_ensure_memory_budget()
-	_preview_resolution = memory_budget.macro_height_resolution
-	_preview_values = PackedFloat32Array()
-	_preview_values.resize(_preview_resolution * _preview_resolution)
-	_preview_values.fill(0.0)
-	_preview_row = 0
-	_preview_noise_a = FastNoiseLite.new()
-	_preview_noise_a.seed = manifest.world_seed
-	_preview_noise_a.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	_preview_noise_a.frequency = 1.0 / maxf(256.0, float(manifest.world_size_m) * 0.23)
-	_preview_noise_a.fractal_type = FastNoiseLite.FRACTAL_FBM
-	_preview_noise_a.fractal_octaves = 5
-	_preview_noise_a.fractal_gain = 0.48
-	_preview_noise_a.fractal_lacunarity = 2.05
-	_preview_noise_b = FastNoiseLite.new()
-	_preview_noise_b.seed = manifest.world_seed ^ 0x5f3759df
-	_preview_noise_b.noise_type = FastNoiseLite.TYPE_SIMPLEX
-	_preview_noise_b.frequency = 1.0 / maxf(128.0, float(manifest.world_size_m) * 0.11)
-	_preview_noise_b.fractal_type = FastNoiseLite.FRACTAL_RIDGED
-	_preview_noise_b.fractal_octaves = 4
-	_preview_noise_b.fractal_gain = 0.52
-	_preview_noise_b.fractal_lacunarity = 2.15
-	_preview_generation_active = true
-	preview_generation_progress.emit(0.0)
-
-
-func _generate_preview_rows() -> void:
-	var start_usec: int = Time.get_ticks_usec()
-	var generation_budget_usec: int = maxi(250, int(memory_budget.frame_work_budget_ms * 700.0))
-	var denominator: float = float(maxi(1, _preview_resolution - 1))
-	var world_size: float = float(manifest.world_size_m)
-	while _preview_row < _preview_resolution:
-		var normalized_z: float = float(_preview_row) / denominator * 2.0 - 1.0
-		var world_z: float = normalized_z * world_size * 0.5
-		for x in range(_preview_resolution):
-			var normalized_x: float = float(x) / denominator * 2.0 - 1.0
-			var world_x: float = normalized_x * world_size * 0.5
-			var coast_noise: float = _preview_noise_b.get_noise_2d(world_x * 0.42, world_z * 0.42)
-			var radius: float = Vector2(normalized_x, normalized_z).length() * (1.0 + coast_noise * 0.16)
-			var island_mask: float = 1.0 - smoothstep(0.58, 1.0, radius)
-			var broad_noise: float = (_preview_noise_a.get_noise_2d(world_x, world_z) + 1.0) * 0.5
-			var ridge_noise: float = 1.0 - absf(_preview_noise_b.get_noise_2d(world_x, world_z))
-			var raw_height: float = island_mask * (0.12 + broad_noise * 0.58 + ridge_noise * 0.30) - 0.08
-			var height_value: float = pow(clampf(raw_height, 0.0, 1.0), 1.28) * preview_height_scale
-			_preview_values[_preview_row * _preview_resolution + x] = height_value
-		_preview_row += 1
-		if Time.get_ticks_usec() - start_usec >= generation_budget_usec:
-			break
-	preview_generation_progress.emit(float(_preview_row) / float(_preview_resolution))
-	if _preview_row >= _preview_resolution:
-		_finalize_preview_generation()
-
-
-func _finalize_preview_generation() -> void:
-	var image := Image.create_from_data(
-		_preview_resolution,
-		_preview_resolution,
-		false,
-		Image.FORMAT_RF,
-		_preview_values.to_byte_array()
-	)
-	if image == null or image.is_empty():
-		push_error("IT-006: Failed to create macro height image")
-		_preview_generation_active = false
+	if _generation_controller == null:
+		push_error("IT-031: Terrain generation controller is unavailable")
 		return
-	image.generate_mipmaps()
+	_ensure_memory_budget()
+	_ensure_generation_profile()
+	_generation_controller.configure(manifest, memory_budget, generation_profile)
+	var error: Error = _generation_controller.start(memory_budget.macro_height_resolution)
+	if error != OK:
+		var message := "Generation start failed with error %d" % error
+		push_error("IT-032: %s" % message)
+		preview_generation_failed.emit(message)
+
+
+func _on_generation_progress(progress: float, stage_name: String) -> void:
+	preview_generation_progress.emit(progress)
+	preview_generation_stage_changed.emit(stage_name)
+
+
+func _on_generation_completed(result: GenerationResult) -> void:
+	if result == null:
+		_on_generation_failed("Generation returned a null result")
+		return
+	var errors: PackedStringArray = result.validate()
+	if not errors.is_empty():
+		_on_generation_failed("; ".join(errors))
+		return
+	var image: Image = result.create_height_image(true)
+	if image == null or image.is_empty():
+		_on_generation_failed("Failed to create generated macro height image")
+		return
+	_generation_result = result
 	_macro_height_image = image
 	_base_macro_height_image = image.duplicate()
 	_height_texture = ImageTexture.create_from_image(image)
 	_clipmap.set_height_texture(_height_texture)
-	if _macro_sync != null:
-		_macro_sync.replace_targets(_macro_height_image, _height_texture)
+	_macro_sync.replace_targets(_macro_height_image, _height_texture)
 	_configure_collision_service()
-	_preview_values = PackedFloat32Array()
-	_preview_noise_a = null
-	_preview_noise_b = null
-	_preview_generation_active = false
 	preview_generation_progress.emit(1.0)
+	preview_generation_stage_changed.emit("Complete")
 	preview_generation_completed.emit()
+
+
+func _on_generation_failed(message: String) -> void:
+	push_error("IT-033: Terrain generation failed: %s" % message)
+	preview_generation_failed.emit(message)
+
+
+func _on_generation_cancelled() -> void:
+	preview_generation_stage_changed.emit("Cancelled")
 
 
 func _configure_collision_service() -> void:
@@ -546,6 +593,40 @@ func _queue_collision_transaction(transaction: EditTransaction) -> void:
 		_collision_service.queue_transaction(transaction)
 
 
+func _world_to_image_pixel(world_position: Vector3, image: Image) -> Vector2i:
+	if manifest == null or image == null or image.is_empty():
+		return Vector2i(-1, -1)
+	var terrain_origin := Vector2(global_position.x, global_position.z)
+	var half: float = float(manifest.world_size_m) * 0.5
+	var uv := Vector2(
+		(world_position.x - terrain_origin.x + half) / float(manifest.world_size_m),
+		(world_position.z - terrain_origin.y + half) / float(manifest.world_size_m)
+	)
+	if uv.x < 0.0 or uv.y < 0.0 or uv.x > 1.0 or uv.y > 1.0:
+		return Vector2i(-1, -1)
+	return Vector2i(
+		clampi(roundi(uv.x * float(image.get_width() - 1)), 0, image.get_width() - 1),
+		clampi(roundi(uv.y * float(image.get_height() - 1)), 0, image.get_height() - 1)
+	)
+
+
+func _generation_index_at_world(world_position: Vector3) -> int:
+	if _generation_result == null or _generation_result.resolution < 1 or manifest == null:
+		return -1
+	var terrain_origin := Vector2(global_position.x, global_position.z)
+	var half: float = float(manifest.world_size_m) * 0.5
+	var uv := Vector2(
+		(world_position.x - terrain_origin.x + half) / float(manifest.world_size_m),
+		(world_position.z - terrain_origin.y + half) / float(manifest.world_size_m)
+	)
+	if uv.x < 0.0 or uv.y < 0.0 or uv.x > 1.0 or uv.y > 1.0:
+		return -1
+	var max_index: int = _generation_result.resolution - 1
+	var x: int = clampi(roundi(uv.x * float(max_index)), 0, max_index)
+	var y: int = clampi(roundi(uv.y * float(max_index)), 0, max_index)
+	return y * _generation_result.resolution + x
+
+
 func _set_device_profile(value: int) -> void:
 	device_profile = clampi(value, 0, 3)
 	if is_inside_tree() and _initialized:
@@ -560,6 +641,8 @@ func _set_device_profile(value: int) -> void:
 			_height_texture,
 			Callable(self, "get_base_height_sample_at_world")
 		)
+		if _generation_controller != null:
+			_generation_controller.configure(manifest, memory_budget, generation_profile)
 		_configure_collision_service()
 		request_preview_rebuild()
 

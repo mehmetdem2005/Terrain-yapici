@@ -10,6 +10,7 @@ var _failures := PackedStringArray()
 
 func _init() -> void:
 	_test_deterministic_generation()
+	_test_invalid_resolution()
 	_test_cancellation()
 	if _failures.is_empty():
 		print("IslandTerrain generation graph tests: PASS")
@@ -73,6 +74,13 @@ func _test_deterministic_generation() -> void:
 	_check(image != null and image.get_width() == 65 and image.get_height() == 65, "height image conversion failed")
 
 
+func _test_invalid_resolution() -> void:
+	var job := GenerationJob.new()
+	var error: Error = job.begin(Manifest.new(), Profile.new(), 64)
+	_check(error == ERR_INVALID_PARAMETER, "non-2^n+1 generation resolution was accepted")
+	_check(job.has_failed(), "invalid generation resolution did not enter failed state")
+
+
 func _test_cancellation() -> void:
 	var manifest := Manifest.new()
 	var profile := Profile.new()
@@ -93,16 +101,19 @@ func _run_job(manifest: Manifest, profile: Profile, resolution: int) -> Result:
 	if begin_error != OK:
 		return null
 	var previous_progress: float = 0.0
+	var peak_memory_bytes: int = job.estimated_working_memory_bytes()
 	var iterations: int = 0
 	while not job.is_complete() and not job.has_failed() and iterations < 50000:
 		job.process_budget(500)
 		var current_progress: float = job.progress()
 		_check(current_progress + 0.0001 >= previous_progress, "generation progress moved backwards")
 		previous_progress = current_progress
+		peak_memory_bytes = maxi(peak_memory_bytes, job.estimated_working_memory_bytes())
 		iterations += 1
 	_check(not job.has_failed(), "generation job failed: %s" % job.error_message())
 	_check(iterations < 50000, "generation job exceeded iteration guard")
 	_check(is_equal_approx(job.progress(), 1.0), "completed generation progress is not 1.0")
+	_check(peak_memory_bytes < 1024 * 1024, "65² generation working set exceeded 1 MB")
 	return job.result() if job.is_complete() else null
 
 

@@ -36,8 +36,6 @@ func _start_test() -> void:
 	var error: Error = _controller.start(65)
 	if error != OK:
 		_fail("controller failed to start: %d" % error)
-		return
-	set_process(true)
 
 
 func _process(_delta: float) -> bool:

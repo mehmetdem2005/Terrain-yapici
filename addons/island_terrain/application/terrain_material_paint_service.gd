@@ -117,17 +117,14 @@ func _build_and_apply_delta(
 	var after_material := PackedByteArray()
 	var before_material_strength := PackedByteArray()
 	var after_material_strength := PackedByteArray()
-	for values in [
-		before_biome,
-		after_biome,
-		before_biome_strength,
-		after_biome_strength,
-		before_material,
-		after_material,
-		before_material_strength,
-		after_material_strength,
-	]:
-		values.resize(count)
+	before_biome.resize(count)
+	after_biome.resize(count)
+	before_biome_strength.resize(count)
+	after_biome_strength.resize(count)
+	before_material.resize(count)
+	after_material.resize(count)
+	before_material_strength.resize(count)
+	after_material_strength.resize(count)
 
 	var has_biome: bool = region.biome_data.size() == total_pixels
 	var has_biome_strength: bool = region.biome_valid_mask.size() == total_pixels

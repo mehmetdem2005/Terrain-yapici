@@ -11,6 +11,7 @@ var _library: Library
 var _generated_atlas: ImageTexture
 var _metadata_texture: Texture2D
 var _effective_backend: int = Library.Backend.COLOR_ONLY
+var _runtime_detail_lod_limit: int = 0
 
 
 func configure(shader_material: ShaderMaterial, library: Library) -> Error:
@@ -19,6 +20,7 @@ func configure(shader_material: ShaderMaterial, library: Library) -> Error:
 	_shader_material = shader_material
 	_library = library if library != null else Library.create_default()
 	_library.sanitize()
+	_runtime_detail_lod_limit = _library.detail_lod_limit
 	_resolve_backend()
 	_apply_parameters()
 	return OK
@@ -29,6 +31,19 @@ func set_metadata_texture(texture: Texture2D) -> void:
 	if _shader_material != null:
 		_shader_material.set_shader_parameter(&"terrain_metadata_texture", texture)
 		_shader_material.set_shader_parameter(&"has_metadata_texture", texture != null)
+
+
+func set_runtime_detail_lod_limit(value: int) -> void:
+	_runtime_detail_lod_limit = clampi(value, 0, 7)
+	if _shader_material != null:
+		_shader_material.set_shader_parameter(
+			&"detail_lod_limit",
+			float(_runtime_detail_lod_limit)
+		)
+
+
+func get_runtime_detail_lod_limit() -> int:
+	return _runtime_detail_lod_limit
 
 
 func effective_backend() -> int:
@@ -69,7 +84,7 @@ func _apply_parameters() -> void:
 		&"atlas_grid",
 		Vector2(float(_library.atlas_columns), float(_library.atlas_rows))
 	)
-	_shader_material.set_shader_parameter(&"detail_lod_limit", float(_library.detail_lod_limit))
+	set_runtime_detail_lod_limit(_runtime_detail_lod_limit)
 	_shader_material.set_shader_parameter(
 		&"metadata_blend_strength",
 		_library.metadata_blend_strength

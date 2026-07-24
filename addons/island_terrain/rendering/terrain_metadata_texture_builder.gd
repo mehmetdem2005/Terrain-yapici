@@ -31,6 +31,8 @@ var _error_message: String = ""
 func start(result: Result, budget: Budget) -> Error:
 	if result == null or budget == null:
 		return ERR_INVALID_PARAMETER
+	if is_running():
+		cancel()
 	var errors: PackedStringArray = result.validate()
 	if not errors.is_empty():
 		_error_message = "; ".join(errors)
@@ -56,6 +58,7 @@ func cancel() -> void:
 		return
 	_stage = Stage.CANCELLED
 	_rgba_data = PackedByteArray()
+	_result = null
 	set_process(false)
 	build_cancelled.emit()
 

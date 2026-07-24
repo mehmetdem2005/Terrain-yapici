@@ -62,6 +62,12 @@ func texture() -> ImageTexture:
 	return _override_texture
 
 
+func sample_override_at_world(world_position: Vector3) -> Color:
+	if not _configured or _override_image == null or _override_image.is_empty():
+		return Color(0.0, 0.0, 0.0, 0.0)
+	return _override_image.get_pixelv(_world_to_macro_pixel(world_position))
+
+
 func pending_region_count() -> int:
 	return _dirty_regions.size()
 
@@ -128,8 +134,9 @@ func _update_override_from_region_rect(coord: Vector2i, rect: Rect2i) -> void:
 		for x in range(min_x, max_x + 1):
 			var world_position: Vector3 = _macro_pixel_to_world(Vector2i(x, y))
 			var sample_coord: Vector2i = _coordinates.world_to_region_clamped(world_position)
-			var sample_region: RegionData = _repository.get_or_create(sample_coord)
+			var sample_region: RegionData = region if sample_coord == coord else _get_existing_region(sample_coord)
 			if sample_region == null:
+				_override_image.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
 				continue
 			var sample_pixel: Vector2i = _coordinates.world_to_region_pixel(world_position, sample_coord)
 			var biome_id: float = float(sample_region.biome_override_id(sample_pixel)) / 7.0
@@ -141,6 +148,17 @@ func _update_override_from_region_rect(coord: Vector2i, rect: Rect2i) -> void:
 				y,
 				Color(biome_id, biome_strength, material_id, material_strength)
 			)
+
+
+func _get_existing_region(coord: Vector2i) -> RegionData:
+	var cached: RegionData = _repository.get_cached(coord)
+	if cached != null:
+		return cached
+	var writable_exists: bool = ResourceLoader.exists(_repository.writable_region_file_path(coord))
+	var source_exists: bool = ResourceLoader.exists(_repository.source_region_file_path(coord))
+	if not writable_exists and not source_exists:
+		return null
+	return _repository.get_or_create(coord)
 
 
 func _upload_override_texture() -> void:

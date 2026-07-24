@@ -43,6 +43,8 @@ func rebuild_metadata(result: Result) -> Error:
 	if _budget == null or _material_service == null:
 		return ERR_UNCONFIGURED
 	_ensure_builder()
+	_metadata_texture = null
+	_material_service.set_metadata_texture(null)
 	return _metadata_builder.start(result, _budget)
 
 

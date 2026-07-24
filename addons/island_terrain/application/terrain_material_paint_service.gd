@@ -107,6 +107,16 @@ func _build_and_apply_delta(
 	region: RegionData,
 	rect: Rect2i
 ) -> RegionDelta:
+	var affects_biome: bool = command.tool in [
+		PaintCommand.Tool.BIOME,
+		PaintCommand.Tool.ERASE_BIOME,
+		PaintCommand.Tool.ERASE_ALL,
+	]
+	var affects_material: bool = command.tool in [
+		PaintCommand.Tool.MATERIAL,
+		PaintCommand.Tool.ERASE_MATERIAL,
+		PaintCommand.Tool.ERASE_ALL,
+	]
 	var count: int = rect.size.x * rect.size.y
 	var total_pixels: int = region.sample_count * region.sample_count
 	var before_biome := PackedByteArray()
@@ -117,14 +127,16 @@ func _build_and_apply_delta(
 	var after_material := PackedByteArray()
 	var before_material_strength := PackedByteArray()
 	var after_material_strength := PackedByteArray()
-	before_biome.resize(count)
-	after_biome.resize(count)
-	before_biome_strength.resize(count)
-	after_biome_strength.resize(count)
-	before_material.resize(count)
-	after_material.resize(count)
-	before_material_strength.resize(count)
-	after_material_strength.resize(count)
+	if affects_biome:
+		before_biome.resize(count)
+		after_biome.resize(count)
+		before_biome_strength.resize(count)
+		after_biome_strength.resize(count)
+	if affects_material:
+		before_material.resize(count)
+		after_material.resize(count)
+		before_material_strength.resize(count)
+		after_material_strength.resize(count)
 
 	var has_biome: bool = region.biome_data.size() == total_pixels
 	var has_biome_strength: bool = region.biome_valid_mask.size() == total_pixels
@@ -138,12 +150,9 @@ func _build_and_apply_delta(
 		for x in range(rect.position.x, rect.end.x):
 			var linear_index: int = y * region.sample_count + x
 			var old_biome: int = int(region.biome_data[linear_index]) if has_biome else 0
-			var old_biome_strength: int = int(region.biome_valid_mask[linear_index]) \
-				if has_biome_strength else 0
-			var old_material: int = int(region.material_index_data[linear_index]) \
-				if has_material else 0
-			var old_material_strength: int = int(region.material_valid_mask[linear_index]) \
-				if has_material_strength else 0
+			var old_biome_strength: int = int(region.biome_valid_mask[linear_index]) if has_biome_strength else 0
+			var old_material: int = int(region.material_index_data[linear_index]) if has_material else 0
+			var old_material_strength: int = int(region.material_valid_mask[linear_index]) if has_material_strength else 0
 			var new_biome: int = old_biome
 			var new_biome_strength: int = old_biome_strength
 			var new_material: int = old_material
@@ -160,12 +169,10 @@ func _build_and_apply_delta(
 				match command.tool:
 					PaintCommand.Tool.BIOME:
 						new_biome = command.biome_id
-						new_biome_strength = maxi(old_biome_strength, amount) \
-							if old_biome == command.biome_id else amount
+						new_biome_strength = maxi(old_biome_strength, amount) if old_biome == command.biome_id else amount
 					PaintCommand.Tool.MATERIAL:
 						new_material = command.material_id
-						new_material_strength = maxi(old_material_strength, amount) \
-							if old_material == command.material_id else amount
+						new_material_strength = maxi(old_material_strength, amount) if old_material == command.material_id else amount
 					PaintCommand.Tool.ERASE_BIOME:
 						new_biome_strength = maxi(0, old_biome_strength - amount)
 						if new_biome_strength == 0:
@@ -182,42 +189,47 @@ func _build_and_apply_delta(
 						if new_material_strength == 0:
 							new_material = 0
 
-			before_biome[value_index] = old_biome
-			after_biome[value_index] = new_biome
-			before_biome_strength[value_index] = old_biome_strength
-			after_biome_strength[value_index] = new_biome_strength
-			before_material[value_index] = old_material
-			after_material[value_index] = new_material
-			before_material_strength[value_index] = old_material_strength
-			after_material_strength[value_index] = new_material_strength
-			if old_biome != new_biome \
-				or old_biome_strength != new_biome_strength \
-				or old_material != new_material \
-				or old_material_strength != new_material_strength:
-				changed = true
+			if affects_biome:
+				before_biome[value_index] = old_biome
+				after_biome[value_index] = new_biome
+				before_biome_strength[value_index] = old_biome_strength
+				after_biome_strength[value_index] = new_biome_strength
+				changed = changed or old_biome != new_biome or old_biome_strength != new_biome_strength
+			if affects_material:
+				before_material[value_index] = old_material
+				after_material[value_index] = new_material
+				before_material_strength[value_index] = old_material_strength
+				after_material_strength[value_index] = new_material_strength
+				changed = changed or old_material != new_material or old_material_strength != new_material_strength
 			value_index += 1
 
 	if not changed:
 		return null
-	region.ensure_channel(&"biome")
-	region.ensure_channel(&"biome_valid")
-	region.ensure_channel(&"material_index")
-	region.ensure_channel(&"material_valid")
+	if affects_biome:
+		region.ensure_channel(&"biome")
+		region.ensure_channel(&"biome_valid")
+	if affects_material:
+		region.ensure_channel(&"material_index")
+		region.ensure_channel(&"material_valid")
 	value_index = 0
 	for y in range(rect.position.y, rect.end.y):
 		var target_index: int = y * region.sample_count + rect.position.x
 		for x in range(rect.size.x):
 			var linear_index: int = target_index + x
-			region.biome_data[linear_index] = after_biome[value_index]
-			region.biome_valid_mask[linear_index] = after_biome_strength[value_index]
-			region.material_index_data[linear_index] = after_material[value_index]
-			region.material_valid_mask[linear_index] = after_material_strength[value_index]
+			if affects_biome:
+				region.biome_data[linear_index] = after_biome[value_index]
+				region.biome_valid_mask[linear_index] = after_biome_strength[value_index]
+			if affects_material:
+				region.material_index_data[linear_index] = after_material[value_index]
+				region.material_valid_mask[linear_index] = after_material_strength[value_index]
 			value_index += 1
 	region.revision += 1
 	var delta := RegionDelta.new()
 	delta.configure(
 		coord,
 		rect,
+		affects_biome,
+		affects_material,
 		before_biome,
 		after_biome,
 		before_biome_strength,

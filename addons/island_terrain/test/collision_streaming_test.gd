@@ -48,6 +48,7 @@ func _setup_service() -> void:
 	manifest.max_height_m = 100.0
 	var coordinates := Coordinates.new(manifest)
 	_target.position = Vector3.ZERO
+	_target.force_update_transform()
 	_service.configure(
 		manifest,
 		coordinates,
@@ -68,7 +69,7 @@ func _test_patch_shape() -> void:
 	_check(_service.active_patch_count() > 0, "no collision patches are active")
 	var center_coord := Vector2i(4, 4)
 	var shape: HeightMapShape3D = _service.get_patch_shape(center_coord)
-	_check(shape != null, "center collision patch shape is missing")
+	_check(shape != null, "center collision patch shape is missing; active=%s" % str(_active_coords()))
 	if shape == null:
 		return
 	_check(shape.map_width == 33 and shape.map_depth == 33, "collision patch sample dimensions are incorrect")
@@ -77,22 +78,28 @@ func _test_patch_shape() -> void:
 
 
 func _test_patch_movement() -> void:
-	_check(_service.get_patch_shape(Vector2i(4, 4)) != null, "initial center patch is missing")
+	_check(_service.get_patch_shape(Vector2i(4, 4)) != null, "initial center patch is missing; active=%s" % str(_active_coords()))
 	_target.position = Vector3(80.0, 0.0, 0.0)
+	_target.force_update_transform()
 	_service.refresh_now()
 	_service.process_pending_immediately()
 	_check(_service.active_patch_count() > 0, "moving target removed all collision patches")
-	_check(_service.get_patch_shape(Vector2i(4, 4)) == null, "old collision patch remained active after target moved away")
-	_check(_service.get_patch_shape(Vector2i(6, 4)) != null, "new target collision patch was not activated")
+	_check(_service.get_patch_shape(Vector2i(4, 4)) == null, "old collision patch remained active; active=%s" % str(_active_coords()))
+	_check(_service.get_patch_shape(Vector2i(6, 4)) != null, "new target collision patch was not activated; active=%s" % str(_active_coords()))
 	_target.position = Vector3.ZERO
+	_target.force_update_transform()
 	_service.refresh_now()
 	_service.process_pending_immediately()
-	_check(_service.get_patch_shape(Vector2i(4, 4)) != null, "returning target did not restore center collision patch")
+	_check(_service.get_patch_shape(Vector2i(4, 4)) != null, "returning target did not restore center patch; active=%s" % str(_active_coords()))
 
 
 func _test_dirty_rebuild_queue() -> void:
 	_service.queue_region_rect(Vector2i.ZERO, Rect2i(0, 0, 65, 65))
-	_check(_service.pending_build_count() > 0, "terrain edit did not queue active collision rebuilds")
+	_check(_service.pending_build_count() > 0, "terrain edit did not queue active collision rebuilds; active=%s" % str(_active_coords()))
+
+
+func _active_coords() -> Array:
+	return _service._active_patches.keys()
 
 
 func _selected_case() -> String:

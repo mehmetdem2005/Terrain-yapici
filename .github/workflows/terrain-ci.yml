@@ -85,6 +85,14 @@ jobs:
             echo "Region material paint facade is not present on this ref; skipping."
           fi
 
+      - name: Foliage planner tests
+        run: |
+          if [ -f addons/island_terrain/test/foliage_planner_test.gd ]; then
+            ./godot --headless --path . --script addons/island_terrain/test/foliage_planner_test.gd
+          else
+            echo "Foliage planner is not present on this ref; skipping."
+          fi
+
       - name: Production hardening tests
         run: ./godot --headless --path . --script addons/island_terrain/test/production_hardening_test.gd
 

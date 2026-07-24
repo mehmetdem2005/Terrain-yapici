@@ -16,6 +16,8 @@ const EditService = preload("res://addons/island_terrain/application/terrain_edi
 const GenerationProfile = preload("res://addons/island_terrain/generation/terrain_generation_profile.gd")
 const GenerationController = preload("res://addons/island_terrain/generation/terrain_generation_controller.gd")
 const GenerationResult = preload("res://addons/island_terrain/generation/terrain_generation_result.gd")
+const MaterialLibrary = preload("res://addons/island_terrain/materials/terrain_material_library.gd")
+const MaterialRuntime = preload("res://addons/island_terrain/materials/terrain_material_runtime.gd")
 const TERRAIN_SHADER = preload("res://addons/island_terrain/rendering/shaders/island_terrain.gdshader")
 
 signal terrain_initialized
@@ -23,6 +25,9 @@ signal preview_generation_progress(progress: float)
 signal preview_generation_stage_changed(stage_name: String)
 signal preview_generation_completed
 signal preview_generation_failed(message: String)
+signal material_metadata_progress(progress: float)
+signal material_metadata_completed(texture: ImageTexture)
+signal material_metadata_failed(message: String)
 signal terrain_edited(transaction: EditTransaction)
 
 @export_category("Terrain Data")
@@ -35,6 +40,9 @@ signal terrain_edited(transaction: EditTransaction)
 @export var generation_profile: GenerationProfile
 @export var generate_preview_on_ready: bool = true
 @export_range(0.1, 1.0, 0.01) var preview_height_scale: float = 0.72
+
+@export_category("Terrain Materials")
+@export var material_library: MaterialLibrary
 
 @export_category("Mobile Performance")
 @export_enum("Low", "Balanced", "High", "Editor Preview") var device_profile: int = 1:
@@ -63,6 +71,7 @@ var _clipmap: ClipmapController
 var _macro_sync: MacroHeightSync
 var _collision_service: CollisionService
 var _generation_controller: GenerationController
+var _material_runtime: MaterialRuntime
 var _edit_service: EditService
 var _terrain_material: ShaderMaterial
 var _height_texture: ImageTexture
@@ -80,6 +89,8 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	if _material_runtime != null:
+		_material_runtime.cancel()
 	if _generation_controller != null and _generation_controller.is_running():
 		_generation_controller.cancel()
 	if _region_repository == null or _region_repository.dirty_region_count() == 0:
@@ -149,6 +160,29 @@ func get_generation_working_memory_bytes() -> int:
 
 func get_generation_result() -> GenerationResult:
 	return _generation_result
+
+
+func is_material_metadata_building() -> bool:
+	return _material_runtime != null and _material_runtime.is_building_metadata()
+
+
+func get_effective_material_backend() -> int:
+	return _material_runtime.effective_backend() if _material_runtime != null else 0
+
+
+func get_material_metadata_texture() -> ImageTexture:
+	return _material_runtime.metadata_texture() if _material_runtime != null else null
+
+
+func get_material_working_memory_bytes() -> int:
+	return _material_runtime.estimated_working_memory_bytes() if _material_runtime != null else 0
+
+
+func refresh_material_library() -> Error:
+	if _material_runtime == null or _terrain_material == null or memory_budget == null:
+		return ERR_UNCONFIGURED
+	_ensure_material_library()
+	return _material_runtime.configure(_terrain_material, material_library, memory_budget)
 
 
 func request_preview_rebuild() -> void:
@@ -369,6 +403,7 @@ func _initialize_terrain() -> void:
 	_ensure_manifest()
 	_ensure_memory_budget()
 	_ensure_generation_profile()
+	_ensure_material_library()
 	var errors: PackedStringArray = manifest.validate()
 	if not errors.is_empty():
 		push_error("IT-001: Manifest validation failed: %s" % "; ".join(errors))
@@ -457,6 +492,34 @@ func _create_internal_services(base_sampler: Callable) -> bool:
 		add_child(_generation_controller, false, Node.INTERNAL_MODE_BACK)
 	_connect_generation_signals()
 	_generation_controller.configure(manifest, memory_budget, generation_profile)
+
+	var material_node: Node = get_node_or_null("__TerrainMaterialRuntime")
+	if material_node != null:
+		_material_runtime = material_node as MaterialRuntime
+		if _material_runtime == null:
+			push_error("IT-034: Reserved child name __TerrainMaterialRuntime is occupied")
+			return false
+	else:
+		_material_runtime = MaterialRuntime.new()
+		_material_runtime.name = "__TerrainMaterialRuntime"
+		add_child(_material_runtime, false, Node.INTERNAL_MODE_BACK)
+	var metadata_progress_callback := Callable(self, "_on_material_metadata_progress")
+	var metadata_completed_callback := Callable(self, "_on_material_metadata_completed")
+	var metadata_failed_callback := Callable(self, "_on_material_metadata_failed")
+	if not _material_runtime.metadata_progress.is_connected(metadata_progress_callback):
+		_material_runtime.metadata_progress.connect(metadata_progress_callback)
+	if not _material_runtime.metadata_completed.is_connected(metadata_completed_callback):
+		_material_runtime.metadata_completed.connect(metadata_completed_callback)
+	if not _material_runtime.metadata_failed.is_connected(metadata_failed_callback):
+		_material_runtime.metadata_failed.connect(metadata_failed_callback)
+	var material_error: Error = _material_runtime.configure(
+		_terrain_material,
+		material_library,
+		memory_budget
+	)
+	if material_error != OK:
+		push_error("IT-035: Terrain material runtime configuration failed: %d" % material_error)
+		return false
 	return true
 
 
@@ -506,6 +569,12 @@ func _ensure_generation_profile() -> void:
 	generation_profile.sanitize()
 
 
+func _ensure_material_library() -> void:
+	if material_library == null:
+		material_library = MaterialLibrary.create_default()
+	material_library.sanitize()
+
+
 func _create_flat_height_texture() -> ImageTexture:
 	var image := Image.create_empty(3, 3, true, Image.FORMAT_RF)
 	image.fill(Color(0.0, 0.0, 0.0, 1.0))
@@ -552,6 +621,10 @@ func _on_generation_completed(result: GenerationResult) -> void:
 	_height_texture = ImageTexture.create_from_image(image)
 	_clipmap.set_height_texture(_height_texture)
 	_macro_sync.replace_targets(_macro_height_image, _height_texture)
+	if _material_runtime != null:
+		var material_error: Error = _material_runtime.rebuild_metadata(result)
+		if material_error != OK:
+			_on_material_metadata_failed("Metadata build start failed with error %d" % material_error)
 	_configure_collision_service()
 	preview_generation_progress.emit(1.0)
 	preview_generation_stage_changed.emit("Complete")
@@ -565,6 +638,19 @@ func _on_generation_failed(message: String) -> void:
 
 func _on_generation_cancelled() -> void:
 	preview_generation_stage_changed.emit("Cancelled")
+
+
+func _on_material_metadata_progress(progress: float) -> void:
+	material_metadata_progress.emit(progress)
+
+
+func _on_material_metadata_completed(texture: ImageTexture) -> void:
+	material_metadata_completed.emit(texture)
+
+
+func _on_material_metadata_failed(message: String) -> void:
+	push_error("IT-036: Terrain material metadata failed: %s" % message)
+	material_metadata_failed.emit(message)
 
 
 func _configure_collision_service() -> void:
@@ -643,6 +729,8 @@ func _set_device_profile(value: int) -> void:
 		)
 		if _generation_controller != null:
 			_generation_controller.configure(manifest, memory_budget, generation_profile)
+		if _material_runtime != null:
+			_material_runtime.configure(_terrain_material, material_library, memory_budget)
 		_configure_collision_service()
 		request_preview_rebuild()
 

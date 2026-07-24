@@ -62,3 +62,9 @@ jobs:
 
       - name: Generation facade tests
         run: ./godot --headless --path . --script addons/island_terrain/test/generation_facade_test.gd
+
+      - name: Material system tests
+        run: ./godot --headless --path . --script addons/island_terrain/test/material_system_test.gd
+
+      - name: Material facade tests
+        run: ./godot --headless --path . --script addons/island_terrain/test/material_facade_test.gd

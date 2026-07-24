@@ -4,6 +4,7 @@ class_name IslandTerrainMacroHeightSync
 
 const Manifest = preload("res://addons/island_terrain/core/terrain_manifest.gd")
 const Coordinates = preload("res://addons/island_terrain/core/terrain_coordinate_system.gd")
+const RegionData = preload("res://addons/island_terrain/core/terrain_region_data.gd")
 const RegionRepository = preload("res://addons/island_terrain/infrastructure/terrain_region_repository.gd")
 const MemoryBudget = preload("res://addons/island_terrain/core/terrain_memory_budget.gd")
 
@@ -13,6 +14,7 @@ var _repository: RegionRepository
 var _budget: MemoryBudget
 var _macro_image: Image
 var _height_texture: ImageTexture
+var _base_height_sampler: Callable
 var _dirty_regions: Dictionary = {}
 var _configured: bool = false
 var _last_upload_bytes: int = 0
@@ -24,12 +26,14 @@ func configure(
 	repository: RegionRepository,
 	budget: MemoryBudget,
 	macro_image: Image,
-	height_texture: ImageTexture
+	height_texture: ImageTexture,
+	base_height_sampler: Callable
 ) -> void:
 	_manifest = manifest
 	_coordinates = coordinates
 	_repository = repository
 	_budget = budget
+	_base_height_sampler = base_height_sampler
 	replace_targets(macro_image, height_texture)
 	_configured = true
 	set_process(true)
@@ -44,7 +48,8 @@ func queue_region_rect(coord: Vector2i, rect: Rect2i) -> void:
 	if not _configured or rect.size.x <= 0 or rect.size.y <= 0:
 		return
 	if _dirty_regions.has(coord):
-		_dirty_regions[coord] = (_dirty_regions[coord] as Rect2i).merge(rect)
+		var existing: Rect2i = _dirty_regions[coord]
+		_dirty_regions[coord] = existing.merge(rect)
 	else:
 		_dirty_regions[coord] = rect
 
@@ -76,7 +81,8 @@ func _process_dirty_regions(budget_usec: int) -> void:
 	var start_usec: int = Time.get_ticks_usec()
 	var processed_any: bool = false
 	while not _dirty_regions.is_empty():
-		var coord: Vector2i = _dirty_regions.keys()[0]
+		var keys: Array = _dirty_regions.keys()
+		var coord: Vector2i = keys[0]
 		var rect: Rect2i = _dirty_regions[coord]
 		_dirty_regions.erase(coord)
 		_update_macro_from_region_rect(coord, rect)
@@ -90,7 +96,7 @@ func _process_dirty_regions(budget_usec: int) -> void:
 func _update_macro_from_region_rect(coord: Vector2i, rect: Rect2i) -> void:
 	if _macro_image == null or _macro_image.is_empty():
 		return
-	var region = _repository.get_or_create(coord)
+	var region: RegionData = _repository.get_or_create(coord)
 	if region == null:
 		return
 	var first_world: Vector3 = _coordinates.region_pixel_to_world(coord, rect.position)
@@ -106,11 +112,17 @@ func _update_macro_from_region_rect(coord: Vector2i, rect: Rect2i) -> void:
 		for x in range(min_x, max_x + 1):
 			var world_position: Vector3 = _macro_pixel_to_world(Vector2i(x, y))
 			var sample_coord: Vector2i = _coordinates.world_to_region_clamped(world_position)
-			var sample_region = _repository.get_or_create(sample_coord)
+			var sample_region: RegionData = _repository.get_or_create(sample_coord)
 			if sample_region == null:
 				continue
 			var sample_pixel: Vector2i = _coordinates.world_to_region_pixel(world_position, sample_coord)
-			var height_m: float = sample_region.get_height(sample_pixel)
+			var height_m: float
+			if sample_region.is_height_valid(sample_pixel):
+				height_m = sample_region.get_height(sample_pixel)
+			elif _base_height_sampler.is_valid():
+				height_m = float(_base_height_sampler.call(world_position))
+			else:
+				height_m = 0.0
 			var normalized: float = clampf(height_m / maxf(_manifest.max_height_m, 0.001), 0.0, 1.0)
 			_macro_image.set_pixel(x, y, Color(normalized, 0.0, 0.0, 1.0))
 
@@ -119,6 +131,9 @@ func _upload_macro_texture() -> void:
 	if _height_texture == null or _macro_image == null:
 		return
 	_macro_image.generate_mipmaps()
+	# Godot's public Texture2D APIs replace the whole image. Dirty rectangles
+	# limit CPU work and uploads are coalesced to once per frame; the macro image
+	# is capped at 257²/513² on runtime profiles.
 	_height_texture.update(_macro_image)
 	_last_upload_bytes = _macro_image.get_width() * _macro_image.get_height() * 4
 

@@ -8,11 +8,16 @@ const CoordinateSystem = preload("res://addons/island_terrain/core/terrain_coord
 const RegionData = preload("res://addons/island_terrain/core/terrain_region_data.gd")
 const RegionRepository = preload("res://addons/island_terrain/infrastructure/terrain_region_repository.gd")
 const ClipmapController = preload("res://addons/island_terrain/rendering/clipmap_controller.gd")
+const MacroHeightSync = preload("res://addons/island_terrain/rendering/macro_height_sync.gd")
+const SculptCommand = preload("res://addons/island_terrain/application/terrain_sculpt_command.gd")
+const EditTransaction = preload("res://addons/island_terrain/application/terrain_edit_transaction.gd")
+const EditService = preload("res://addons/island_terrain/application/terrain_edit_service.gd")
 const TERRAIN_SHADER = preload("res://addons/island_terrain/rendering/shaders/island_terrain.gdshader")
 
 signal terrain_initialized
 signal preview_generation_progress(progress: float)
 signal preview_generation_completed
+signal terrain_edited(transaction: EditTransaction)
 
 @export_category("Terrain Data")
 @export var manifest: ManifestResource
@@ -37,6 +42,8 @@ signal preview_generation_completed
 var _coordinate_system: CoordinateSystem
 var _region_repository: RegionRepository
 var _clipmap: ClipmapController
+var _macro_sync: MacroHeightSync
+var _edit_service: EditService
 var _terrain_material: ShaderMaterial
 var _height_texture: ImageTexture
 var _macro_height_image: Image
@@ -100,6 +107,10 @@ func _notification(what: int) -> void:
 		)
 
 
+func is_initialized() -> bool:
+	return _initialized
+
+
 func request_preview_rebuild() -> void:
 	if _initialized:
 		_schedule_preview_generation()
@@ -114,6 +125,10 @@ func flush_pending_saves(max_regions: int = -1) -> Error:
 		return OK
 	_region_repository.save_dirty(max_regions)
 	return OK if _region_repository.dirty_region_count() == 0 else ERR_BUSY
+
+
+func flush_height_sync() -> Error:
+	return _macro_sync.flush_all() if _macro_sync != null else ERR_UNCONFIGURED
 
 
 func save_manifest() -> Error:
@@ -139,14 +154,36 @@ func save_manifest() -> Error:
 
 
 func get_region(coord: Vector2i) -> RegionData:
-	if _region_repository == null:
-		return null
-	return _region_repository.get_or_create(coord)
+	return _region_repository.get_or_create(coord) if _region_repository != null else null
 
 
 func mark_region_dirty(coord: Vector2i) -> void:
 	if _region_repository != null:
 		_region_repository.mark_dirty(coord)
+
+
+func apply_sculpt_command(command: SculptCommand) -> EditTransaction:
+	if _edit_service == null:
+		push_error("IT-022: Terrain edit service is not initialized")
+		return null
+	var transaction: EditTransaction = _edit_service.apply_sculpt(command)
+	if transaction != null and not transaction.is_empty():
+		terrain_edited.emit(transaction)
+	return transaction
+
+
+func apply_edit_transaction_before(transaction: EditTransaction) -> Error:
+	return _edit_service.apply_transaction_before(transaction) if _edit_service != null else ERR_UNCONFIGURED
+
+
+func apply_edit_transaction_after(transaction: EditTransaction) -> Error:
+	return _edit_service.apply_transaction_after(transaction) if _edit_service != null else ERR_UNCONFIGURED
+
+
+func height_sample_from_world_y(world_y: float) -> float:
+	if manifest == null:
+		return 0.0
+	return clampf(world_y - global_position.y - manifest.sea_level_m, 0.0, manifest.max_height_m)
 
 
 func get_height_at_world(world_position: Vector3) -> float:
@@ -169,6 +206,62 @@ func get_height_at_world(world_position: Vector3) -> float:
 		+ _macro_height_image.get_pixelv(pixel).r * manifest.max_height_m
 
 
+func get_normal_at_world(world_position: Vector3, sample_distance_m: float = 1.0) -> Vector3:
+	var d: float = maxf(0.25, sample_distance_m)
+	var h_l: float = get_height_at_world(world_position - Vector3(d, 0.0, 0.0))
+	var h_r: float = get_height_at_world(world_position + Vector3(d, 0.0, 0.0))
+	var h_d: float = get_height_at_world(world_position - Vector3(0.0, 0.0, d))
+	var h_u: float = get_height_at_world(world_position + Vector3(0.0, 0.0, d))
+	return Vector3(h_l - h_r, d * 2.0, h_d - h_u).normalized()
+
+
+func intersect_ray_heightfield(
+	ray_origin: Vector3,
+	ray_direction: Vector3,
+	max_distance_m: float = 8192.0,
+	step_m: float = 4.0
+) -> Dictionary:
+	if not _initialized or ray_direction.is_zero_approx():
+		return {}
+	var direction: Vector3 = ray_direction.normalized()
+	var safe_step: float = maxf(0.5, step_m)
+	var previous_t: float = 0.0
+	var previous_position: Vector3 = ray_origin
+	var previous_signed: float = previous_position.y - get_height_at_world(previous_position)
+	if previous_signed <= 0.0:
+		return {
+			"position": previous_position,
+			"normal": get_normal_at_world(previous_position),
+			"distance": 0.0,
+		}
+	var t: float = safe_step
+	while t <= max_distance_m:
+		var position: Vector3 = ray_origin + direction * t
+		var signed_height: float = position.y - get_height_at_world(position)
+		if previous_signed > 0.0 and signed_height <= 0.0:
+			var low: float = previous_t
+			var high: float = t
+			for _iteration in range(10):
+				var middle: float = (low + high) * 0.5
+				var middle_position: Vector3 = ray_origin + direction * middle
+				if middle_position.y - get_height_at_world(middle_position) > 0.0:
+					low = middle
+				else:
+					high = middle
+			var hit_distance: float = high
+			var hit_position: Vector3 = ray_origin + direction * hit_distance
+			hit_position.y = get_height_at_world(hit_position)
+			return {
+				"position": hit_position,
+				"normal": get_normal_at_world(hit_position),
+				"distance": hit_distance,
+			}
+		previous_t = t
+		previous_signed = signed_height
+		t += safe_step
+	return {}
+
+
 func _initialize_terrain() -> void:
 	_ensure_manifest()
 	_ensure_memory_budget()
@@ -183,9 +276,29 @@ func _initialize_terrain() -> void:
 	_terrain_material = ShaderMaterial.new()
 	_terrain_material.shader = TERRAIN_SHADER
 	_height_texture = _create_flat_height_texture()
-	var existing_node: Node = get_node_or_null("__IslandClipmap")
-	if existing_node != null:
-		_clipmap = existing_node as ClipmapController
+
+	var sync_node: Node = get_node_or_null("__MacroHeightSync")
+	if sync_node != null:
+		_macro_sync = sync_node as MacroHeightSync
+		if _macro_sync == null:
+			push_error("IT-023: Reserved child name __MacroHeightSync is occupied")
+			return
+	else:
+		_macro_sync = MacroHeightSync.new()
+		_macro_sync.name = "__MacroHeightSync"
+		add_child(_macro_sync, false, Node.INTERNAL_MODE_BACK)
+	_macro_sync.configure(
+		manifest,
+		_coordinate_system,
+		_region_repository,
+		memory_budget,
+		_macro_height_image,
+		_height_texture
+	)
+
+	var clipmap_node: Node = get_node_or_null("__IslandClipmap")
+	if clipmap_node != null:
+		_clipmap = clipmap_node as ClipmapController
 		if _clipmap == null:
 			push_error("IT-011: Reserved child name __IslandClipmap is occupied by an incompatible node")
 			return
@@ -194,6 +307,7 @@ func _initialize_terrain() -> void:
 		_clipmap.name = "__IslandClipmap"
 		add_child(_clipmap, false, Node.INTERNAL_MODE_BACK)
 	_clipmap.configure(manifest, memory_budget, _terrain_material, _height_texture)
+	_edit_service = EditService.new(manifest, _coordinate_system, _region_repository, _macro_sync)
 	_initialized = true
 	set_process(true)
 	if generate_preview_on_ready:
@@ -303,6 +417,8 @@ func _finalize_preview_generation() -> void:
 	_macro_height_image = image
 	_height_texture = ImageTexture.create_from_image(image)
 	_clipmap.set_height_texture(_height_texture)
+	if _macro_sync != null:
+		_macro_sync.replace_targets(_macro_height_image, _height_texture)
 	_preview_values = PackedFloat32Array()
 	_preview_noise_a = null
 	_preview_noise_b = null
@@ -316,6 +432,14 @@ func _set_device_profile(value: int) -> void:
 	if is_inside_tree() and _initialized:
 		memory_budget = MemoryBudget.create_for_profile(device_profile)
 		_clipmap.configure(manifest, memory_budget, _terrain_material, _height_texture)
+		_macro_sync.configure(
+			manifest,
+			_coordinate_system,
+			_region_repository,
+			memory_budget,
+			_macro_height_image,
+			_height_texture
+		)
 		_schedule_preview_generation()
 
 

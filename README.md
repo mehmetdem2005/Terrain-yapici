@@ -2,7 +2,7 @@
 
 Godot 4.6.3 Mobile Renderer için büyük, bölgesel ve gelecekte kazılabilir terrain eklentisi.
 
-## IslandTerrain 0.2
+## IslandTerrain 0.3
 
 - 4 km region-streamed terrain foundation
 - Geometry clipmap LOD renderer
@@ -13,6 +13,8 @@ Godot 4.6.3 Mobile Renderer için büyük, bölgesel ve gelecekte kazılabilir t
 - Dirty-rectangle CPU senkronizasyonu ve coalesced macro texture upload
 - Delta tabanlı bounded undo/redo
 - Fare ve Android editör için tek parmak sculpt paneli
+- Hedef/kamera çevresinde pool’lanmış streamed collision patch’leri
+- Sculpt, undo ve redo sonrası sınırlı collision rebuild kuyruğu
 - Gelecekteki sparse voxel/SDF kazma backend sözleşmesi
 
 ## Kullanım
@@ -21,6 +23,7 @@ Godot 4.6.3 Mobile Renderer için büyük, bölgesel ve gelecekte kazılabilir t
 2. `Project > Project Settings > Plugins` bölümünden `IslandTerrain` eklentisini etkinleştir.
 3. 3D sahneye `IslandTerrain3D` ekle.
 4. Node’u seçince sol dock’taki `IslandTerrain Sculpt` panelini kullan.
-5. Telefonlarda `Balanced` profil ile başla.
+5. Oyun sahnesinde `collision_target_path` alanına oyuncu node’unu ver; boş bırakılırsa aktif kamera kullanılır.
+6. Telefonlarda `Balanced` profil ile başla.
 
 Ayrıntılı mimari ve test bilgileri `addons/island_terrain/README.md` dosyasındadır.

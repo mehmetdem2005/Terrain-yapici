@@ -44,3 +44,12 @@ jobs:
 
       - name: Sculpt pipeline tests
         run: ./godot --headless --path . --script addons/island_terrain/test/sculpt_pipeline_test.gd
+
+      - name: Collision shape test
+        run: ./godot --headless --path . --script addons/island_terrain/test/collision_streaming_test.gd -- --case=shape
+
+      - name: Collision movement test
+        run: ./godot --headless --path . --script addons/island_terrain/test/collision_streaming_test.gd -- --case=movement
+
+      - name: Collision dirty rebuild test
+        run: ./godot --headless --path . --script addons/island_terrain/test/collision_streaming_test.gd -- --case=dirty

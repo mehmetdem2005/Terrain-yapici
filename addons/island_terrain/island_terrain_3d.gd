@@ -9,6 +9,7 @@ const RegionData = preload("res://addons/island_terrain/core/terrain_region_data
 const RegionRepository = preload("res://addons/island_terrain/infrastructure/terrain_region_repository.gd")
 const ClipmapController = preload("res://addons/island_terrain/rendering/clipmap_controller.gd")
 const MacroHeightSync = preload("res://addons/island_terrain/rendering/macro_height_sync.gd")
+const CollisionService = preload("res://addons/island_terrain/physics/terrain_collision_service.gd")
 const SculptCommand = preload("res://addons/island_terrain/application/terrain_sculpt_command.gd")
 const EditTransaction = preload("res://addons/island_terrain/application/terrain_edit_transaction.gd")
 const EditService = preload("res://addons/island_terrain/application/terrain_edit_service.gd")
@@ -33,6 +34,15 @@ signal terrain_edited(transaction: EditTransaction)
 @export_range(0.1, 1.0, 0.01) var preview_height_scale: float = 0.72
 @export_range(0, 4, 1) var runtime_shutdown_flush_limit: int = 2
 
+@export_category("Streamed Collision")
+@export var collision_enabled: bool = true:
+	set = _set_collision_enabled
+@export var collision_target_path: NodePath
+@export_range(16, 128, 16) var collision_patch_size_m: int = 64
+@export var collision_layer: int = 1
+@export var collision_mask: int = 1
+@export_range(0.05, 1.0, 0.05) var collision_update_interval_s: float = 0.20
+
 @export_category("Editor Commands")
 @export var rebuild_preview_requested: bool = false:
 	set = _set_rebuild_preview_requested
@@ -43,6 +53,7 @@ var _coordinate_system: CoordinateSystem
 var _region_repository: RegionRepository
 var _clipmap: ClipmapController
 var _macro_sync: MacroHeightSync
+var _collision_service: CollisionService
 var _edit_service: EditService
 var _terrain_material: ShaderMaterial
 var _height_texture: ImageTexture
@@ -94,6 +105,8 @@ func _notification(what: int) -> void:
 		return
 	if _coordinate_system != null:
 		_coordinate_system.set_origin_world_xz(Vector2(global_position.x, global_position.z))
+	if _collision_service != null:
+		_collision_service.refresh_now()
 	if _transform_warning_emitted:
 		return
 	var basis: Basis = global_transform.basis
@@ -175,12 +188,18 @@ func apply_sculpt_command(command: SculptCommand) -> EditTransaction:
 	var transaction: EditTransaction = _edit_service.apply_sculpt(command)
 	if transaction != null and not transaction.is_empty():
 		_has_height_edits = true
+		_queue_collision_transaction(transaction)
 		terrain_edited.emit(transaction)
 	return transaction
 
 
 func apply_edit_transaction_before(transaction: EditTransaction) -> Error:
-	return _edit_service.apply_transaction_before(transaction) if _edit_service != null else ERR_UNCONFIGURED
+	if _edit_service == null:
+		return ERR_UNCONFIGURED
+	var error: Error = _edit_service.apply_transaction_before(transaction)
+	if error == OK:
+		_queue_collision_transaction(transaction)
+	return error
 
 
 func apply_edit_transaction_after(transaction: EditTransaction) -> Error:
@@ -189,7 +208,26 @@ func apply_edit_transaction_after(transaction: EditTransaction) -> Error:
 	var error: Error = _edit_service.apply_transaction_after(transaction)
 	if error == OK:
 		_has_height_edits = true
+		_queue_collision_transaction(transaction)
 	return error
+
+
+func set_collision_tracking_target(target: Node3D) -> void:
+	if _collision_service != null:
+		_collision_service.set_tracking_target(target)
+
+
+func refresh_collision_now() -> void:
+	if _collision_service != null:
+		_collision_service.refresh_now()
+
+
+func get_active_collision_patch_count() -> int:
+	return _collision_service.active_patch_count() if _collision_service != null else 0
+
+
+func get_terrain_base_y() -> float:
+	return global_position.y
 
 
 func height_sample_from_world_y(world_y: float) -> float:
@@ -339,6 +377,18 @@ func _initialize_terrain() -> void:
 		_clipmap.name = "__IslandClipmap"
 		add_child(_clipmap, false, Node.INTERNAL_MODE_BACK)
 	_clipmap.configure(manifest, memory_budget, _terrain_material, _height_texture)
+
+	var collision_node: Node = get_node_or_null("__TerrainCollision")
+	if collision_node != null:
+		_collision_service = collision_node as CollisionService
+		if _collision_service == null:
+			push_error("IT-026: Reserved child name __TerrainCollision is occupied")
+			return
+	else:
+		_collision_service = CollisionService.new()
+		_collision_service.name = "__TerrainCollision"
+		add_child(_collision_service, false, Node.INTERNAL_MODE_BACK)
+
 	_edit_service = EditService.new(
 		manifest,
 		_coordinate_system,
@@ -350,6 +400,8 @@ func _initialize_terrain() -> void:
 	set_process(true)
 	if generate_preview_on_ready:
 		_schedule_preview_generation()
+	else:
+		_configure_collision_service()
 	terrain_initialized.emit()
 
 
@@ -459,12 +511,39 @@ func _finalize_preview_generation() -> void:
 	_clipmap.set_height_texture(_height_texture)
 	if _macro_sync != null:
 		_macro_sync.replace_targets(_macro_height_image, _height_texture)
+	_configure_collision_service()
 	_preview_values = PackedFloat32Array()
 	_preview_noise_a = null
 	_preview_noise_b = null
 	_preview_generation_active = false
 	preview_generation_progress.emit(1.0)
 	preview_generation_completed.emit()
+
+
+func _configure_collision_service() -> void:
+	if _collision_service == null or manifest == null or memory_budget == null:
+		return
+	_collision_service.configure(
+		manifest,
+		_coordinate_system,
+		Callable(self, "get_height_at_world"),
+		Callable(self, "get_terrain_base_y"),
+		collision_patch_size_m,
+		memory_budget.collision_radius_m,
+		collision_layer,
+		collision_mask,
+		collision_update_interval_s
+	)
+	_collision_service.set_enabled(collision_enabled)
+	var target: Node3D = null
+	if not collision_target_path.is_empty():
+		target = get_node_or_null(collision_target_path) as Node3D
+	_collision_service.set_tracking_target(target)
+
+
+func _queue_collision_transaction(transaction: EditTransaction) -> void:
+	if _collision_service != null and transaction != null:
+		_collision_service.queue_transaction(transaction)
 
 
 func _set_device_profile(value: int) -> void:
@@ -481,7 +560,14 @@ func _set_device_profile(value: int) -> void:
 			_height_texture,
 			Callable(self, "get_base_height_sample_at_world")
 		)
+		_configure_collision_service()
 		request_preview_rebuild()
+
+
+func _set_collision_enabled(value: bool) -> void:
+	collision_enabled = value
+	if _collision_service != null:
+		_collision_service.set_enabled(collision_enabled)
 
 
 func _set_rebuild_preview_requested(value: bool) -> void:

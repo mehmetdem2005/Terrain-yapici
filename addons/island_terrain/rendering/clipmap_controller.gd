@@ -47,6 +47,37 @@ func set_height_texture(texture: Texture2D) -> void:
 		_source_material.set_shader_parameter("height_texture", _height_texture)
 
 
+func set_shadow_lod_count(value: int) -> void:
+	if _budget == null:
+		return
+	_budget.shadow_lod_count = clampi(value, 0, _budget.clipmap_levels)
+	for level in range(_level_instances.size()):
+		var instance: MeshInstance3D = _level_instances[level]
+		if not is_instance_valid(instance):
+			continue
+		instance.cast_shadow = (
+			GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+			if level < _budget.shadow_lod_count
+			else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		)
+
+
+func get_shadow_lod_count() -> int:
+	return _budget.shadow_lod_count if _budget != null else 0
+
+
+func active_level_count() -> int:
+	var count: int = 0
+	for instance in _level_instances:
+		if is_instance_valid(instance):
+			count += 1
+	return count
+
+
+func pending_level_count() -> int:
+	return _pending_levels.size()
+
+
 func rebuild_deferred() -> void:
 	_clear_levels()
 	_pending_levels.clear()

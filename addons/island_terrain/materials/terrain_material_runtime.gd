@@ -53,6 +53,16 @@ func cancel() -> void:
 		_metadata_builder.cancel()
 
 
+func set_runtime_detail_lod_limit(value: int) -> void:
+	if _material_service != null:
+		_material_service.set_runtime_detail_lod_limit(value)
+
+
+func get_runtime_detail_lod_limit() -> int:
+	return _material_service.get_runtime_detail_lod_limit() \
+		if _material_service != null else 0
+
+
 func is_building_metadata() -> bool:
 	return _metadata_builder != null and _metadata_builder.is_running()
 

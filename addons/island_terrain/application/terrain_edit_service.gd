@@ -14,18 +14,21 @@ var _manifest: Manifest
 var _coordinates: Coordinates
 var _repository: RegionRepository
 var _macro_sync: Node
+var _base_height_sampler: Callable
 
 
 func _init(
 	manifest: Manifest,
 	coordinates: Coordinates,
 	repository: RegionRepository,
-	macro_sync: Node
+	macro_sync: Node,
+	base_height_sampler: Callable
 ) -> void:
 	_manifest = manifest
 	_coordinates = coordinates
 	_repository = repository
 	_macro_sync = macro_sync
+	_base_height_sampler = base_height_sampler
 
 
 func apply_sculpt(command: SculptCommand) -> EditTransaction:
@@ -35,6 +38,9 @@ func apply_sculpt(command: SculptCommand) -> EditTransaction:
 	var validation: PackedStringArray = command.validate()
 	if not validation.is_empty():
 		push_error("IT-020: Invalid sculpt command: %s" % "; ".join(validation))
+		return null
+	if not _base_height_sampler.is_valid():
+		push_error("IT-024: Base terrain sampler is unavailable")
 		return null
 
 	var transaction := EditTransaction.new()
@@ -110,11 +116,26 @@ func _build_and_apply_delta(
 	rect: Rect2i
 ) -> RegionDelta:
 	var source: PackedFloat32Array = region.height_data.duplicate()
+	var source_valid := PackedByteArray()
+	source_valid.resize(region.sample_count * region.sample_count)
+	if region.height_is_dense:
+		source_valid.fill(1)
+	elif region.height_valid_mask.size() == source_valid.size():
+		source_valid = region.height_valid_mask.duplicate()
+	else:
+		source_valid.fill(0)
+
+	if not region.height_is_dense:
+		region.ensure_channel(&"height_valid")
 	var count: int = rect.size.x * rect.size.y
 	var before := PackedFloat32Array()
 	var after := PackedFloat32Array()
+	var before_valid := PackedByteArray()
+	var after_valid := PackedByteArray()
 	before.resize(count)
 	after.resize(count)
+	before_valid.resize(count)
+	after_valid.resize(count)
 	var changed: bool = false
 	var value_index: int = 0
 	var center_xz := Vector2(command.center_world.x, command.center_world.z)
@@ -123,18 +144,35 @@ func _build_and_apply_delta(
 		for x in range(rect.position.x, rect.end.x):
 			var pixel := Vector2i(x, y)
 			var linear_index: int = y * region.sample_count + x
-			var old_height: float = source[linear_index]
 			var world_pos: Vector3 = _coordinates.region_pixel_to_world(coord, pixel)
+			var was_valid: bool = source_valid[linear_index] != 0
+			var old_height: float = source[linear_index] if was_valid else _sample_base_height(world_pos)
 			var distance_m: float = Vector2(world_pos.x, world_pos.z).distance_to(center_xz)
 			var weight: float = command.weight_for_distance(distance_m)
 			var new_height: float = old_height
+			var will_be_valid: bool = was_valid
 			if weight > 0.0:
-				new_height = _evaluate_height(command, source, region.sample_count, pixel, old_height, weight)
+				new_height = _evaluate_height(
+					command,
+					coord,
+					source,
+					source_valid,
+					region.sample_count,
+					pixel,
+					old_height,
+					weight
+				)
 				new_height = clampf(new_height, 0.0, _manifest.max_height_m)
+				if not is_equal_approx(old_height, new_height):
+					will_be_valid = true
 			before[value_index] = old_height
 			after[value_index] = new_height
+			before_valid[value_index] = 1 if was_valid else 0
+			after_valid[value_index] = 1 if will_be_valid else 0
 			if not is_equal_approx(old_height, new_height):
 				region.height_data[linear_index] = new_height
+				if not region.height_is_dense:
+					region.height_valid_mask[linear_index] = 1
 				changed = true
 			value_index += 1
 
@@ -142,13 +180,15 @@ func _build_and_apply_delta(
 		return null
 	region.revision += 1
 	var delta := RegionDelta.new()
-	delta.configure(coord, rect, before, after)
+	delta.configure(coord, rect, before, after, before_valid, after_valid)
 	return delta
 
 
 func _evaluate_height(
 	command: SculptCommand,
+	coord: Vector2i,
 	source: PackedFloat32Array,
+	source_valid: PackedByteArray,
 	sample_count: int,
 	pixel: Vector2i,
 	old_height: float,
@@ -162,13 +202,15 @@ func _evaluate_height(
 		SculptCommand.Tool.FLATTEN:
 			return lerpf(old_height, command.target_height_m, clampf(command.strength * weight, 0.0, 1.0))
 		SculptCommand.Tool.SMOOTH:
-			var average: float = _neighbor_average(source, sample_count, pixel)
+			var average: float = _neighbor_average(coord, source, source_valid, sample_count, pixel)
 			return lerpf(old_height, average, clampf(command.strength * weight, 0.0, 1.0))
 	return old_height
 
 
 func _neighbor_average(
+	coord: Vector2i,
 	source: PackedFloat32Array,
+	source_valid: PackedByteArray,
 	sample_count: int,
 	pixel: Vector2i
 ) -> float:
@@ -176,11 +218,22 @@ func _neighbor_average(
 	var samples: int = 0
 	for offset_y in range(-1, 2):
 		for offset_x in range(-1, 2):
-			var x: int = clampi(pixel.x + offset_x, 0, sample_count - 1)
-			var y: int = clampi(pixel.y + offset_y, 0, sample_count - 1)
-			total += source[y * sample_count + x]
+			var sample_pixel := Vector2i(
+				clampi(pixel.x + offset_x, 0, sample_count - 1),
+				clampi(pixel.y + offset_y, 0, sample_count - 1)
+			)
+			var index: int = sample_pixel.y * sample_count + sample_pixel.x
+			if source_valid[index] != 0:
+				total += source[index]
+			else:
+				var world_pos: Vector3 = _coordinates.region_pixel_to_world(coord, sample_pixel)
+				total += _sample_base_height(world_pos)
 			samples += 1
 	return total / float(maxi(samples, 1))
+
+
+func _sample_base_height(world_position: Vector3) -> float:
+	return float(_base_height_sampler.call(world_position))
 
 
 func _queue_transaction_sync(transaction: EditTransaction) -> void:

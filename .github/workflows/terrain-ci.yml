@@ -49,19 +49,7 @@ jobs:
         run: ./godot --headless --path . --script addons/island_terrain/test/collision_streaming_test.gd -- --case=shape
 
       - name: Collision movement test
-        shell: bash
-        run: |
-          set -o pipefail
-          ./godot --headless --path . --script addons/island_terrain/test/collision_streaming_test.gd -- --case=movement 2>&1 | tee collision-movement.log
-
-      - name: Upload collision movement log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: collision-movement-log
-          path: collision-movement.log
-          if-no-files-found: warn
+        run: ./godot --headless --path . --script addons/island_terrain/test/collision_streaming_test.gd -- --case=movement
 
       - name: Collision dirty rebuild test
-        if: success()
         run: ./godot --headless --path . --script addons/island_terrain/test/collision_streaming_test.gd -- --case=dirty

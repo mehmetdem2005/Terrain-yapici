@@ -216,7 +216,8 @@ void fragment() {
 	vec3 fallback_color = mix(grass_tint, mountain_tint, fallback_elevation);
 	fallback_color = mix(fallback_color, rock_tint, smoothstep(0.28, 0.72, terrain_slope));
 	float metadata_mix = has_metadata_texture ? metadata_blend_strength : 0.0;
-	ALBEDO = mix(fallback_color, albedo, max(metadata_mix, manual_strength));
+	float override_mix = max(override_data.g, manual_strength);
+	ALBEDO = mix(fallback_color, albedo, max(metadata_mix, override_mix));
 
 	ROUGHNESS = sand_roughness * sand_weight
 		+ grass_roughness * grass_weight

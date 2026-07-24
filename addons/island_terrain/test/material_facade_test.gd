@@ -110,6 +110,13 @@ func _validate_material_runtime() -> void:
 	if _terrain.get_material_working_memory_bytes() != 0:
 		_fail("material metadata temporary memory was not released")
 		return
+	var override_texture: ImageTexture = _terrain.get_material_override_texture()
+	if override_texture == null:
+		_fail("material facade has no manual override texture")
+		return
+	if _terrain.get_material_resident_memory_bytes() != 65 * 65 * 4:
+		_fail("manual override resident memory accounting is incorrect")
+		return
 	if _terrain.refresh_material_library() != OK:
 		_fail("material library refresh failed")
 		return

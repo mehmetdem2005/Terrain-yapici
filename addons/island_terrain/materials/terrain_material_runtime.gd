@@ -17,6 +17,7 @@ var _library: Library
 var _material_service: MaterialService
 var _metadata_builder: MetadataBuilder
 var _metadata_texture: ImageTexture
+var _override_texture: ImageTexture
 
 
 func configure(
@@ -36,6 +37,7 @@ func configure(
 	_ensure_builder()
 	if _metadata_texture != null:
 		_material_service.set_metadata_texture(_metadata_texture)
+	_material_service.set_override_texture(_override_texture)
 	return OK
 
 
@@ -61,6 +63,16 @@ func set_runtime_detail_lod_limit(value: int) -> void:
 func get_runtime_detail_lod_limit() -> int:
 	return _material_service.get_runtime_detail_lod_limit() \
 		if _material_service != null else 0
+
+
+func set_override_texture(texture: ImageTexture) -> void:
+	_override_texture = texture
+	if _material_service != null:
+		_material_service.set_override_texture(texture)
+
+
+func override_texture() -> ImageTexture:
+	return _override_texture
 
 
 func is_building_metadata() -> bool:

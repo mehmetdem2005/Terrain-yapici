@@ -1,0 +1,19 @@
+; Engine configuration file.
+; Minimal validation project for Terrain-yapici / IslandTerrain.
+
+config_version=5
+
+[application]
+
+config/name="Terrain-yapici"
+config/features=PackedStringArray("4.6", "Mobile")
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/island_terrain/plugin.cfg")
+
+[rendering]
+
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+textures/default_filters/use_nearest_mipmap_filter=false

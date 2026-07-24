@@ -1,0 +1,43 @@
+name: Terrain-yapici CI
+
+on:
+  pull_request:
+    paths:
+      - "addons/island_terrain/**"
+      - "project.godot"
+      - ".github/workflows/terrain-ci.yml"
+  push:
+    branches:
+      - main
+      - "agent/**"
+    paths:
+      - "addons/island_terrain/**"
+      - "project.godot"
+      - ".github/workflows/terrain-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  godot-headless:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Godot 4.6.3
+        run: |
+          curl -L --fail --retry 3 \
+            -o godot.zip \
+            https://github.com/godotengine/godot/releases/download/4.6.3-stable/Godot_v4.6.3-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          mv Godot_v4.6.3-stable_linux.x86_64 godot
+          chmod +x godot
+          ./godot --version
+
+      - name: Parse project and load plugin
+        run: ./godot --headless --path . --editor --quit-after 3
+
+      - name: Foundation tests
+        run: ./godot --headless --path . --script addons/island_terrain/test/foundation_test.gd

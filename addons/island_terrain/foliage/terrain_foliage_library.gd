@@ -8,7 +8,10 @@ const Layer = preload("res://addons/island_terrain/foliage/terrain_foliage_layer
 @export_range(32.0, 256.0, 16.0) var active_radius_m: float = 96.0
 @export_range(0.1, 2.0, 0.05) var density_scale: float = 1.0
 @export_range(1, 4, 1) var max_cell_builds_per_frame: int = 1
+@export_range(0.25, 3.0, 0.25) var frame_build_budget_ms: float = 0.75
+@export_range(0.05, 1.0, 0.05) var update_interval_s: float = 0.20
 @export_range(8, 256, 1) var max_active_cells: int = 64
+@export_range(0, 256, 1) var max_pooled_cells: int = 32
 @export_range(0, 2147483647, 1) var seed_salt: int = 73471
 @export var layers: Array[Layer] = []
 
@@ -56,7 +59,10 @@ func sanitize() -> void:
 	active_radius_m = clampf(active_radius_m, float(cell_size_m), 256.0)
 	density_scale = clampf(density_scale, 0.1, 2.0)
 	max_cell_builds_per_frame = clampi(max_cell_builds_per_frame, 1, 4)
+	frame_build_budget_ms = clampf(frame_build_budget_ms, 0.25, 3.0)
+	update_interval_s = clampf(update_interval_s, 0.05, 1.0)
 	max_active_cells = clampi(max_active_cells, 8, 256)
+	max_pooled_cells = clampi(max_pooled_cells, 0, max_active_cells)
 	seed_salt = maxi(0, seed_salt)
 	var clean_layers: Array[Layer] = []
 	var ids: Dictionary = {}
@@ -83,3 +89,7 @@ func estimated_active_cell_count() -> int:
 	var radius_cells: int = ceili(active_radius_m / float(cell_size_m))
 	var square_count: int = (radius_cells * 2 + 1) * (radius_cells * 2 + 1)
 	return mini(max_active_cells, square_count)
+
+
+func estimated_transform_memory_bytes() -> int:
+	return estimated_active_cell_count() * estimated_max_instances_per_cell() * 48

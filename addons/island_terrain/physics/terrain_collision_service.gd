@@ -43,6 +43,8 @@ func configure(
 	collision_mask: int,
 	update_interval_s: float
 ) -> void:
+	if _configured:
+		_deactivate_all()
 	_manifest = manifest
 	_coordinates = coordinates
 	_height_sampler = height_sampler
@@ -52,6 +54,8 @@ func configure(
 	_collision_layer = collision_layer
 	_collision_mask = collision_mask
 	_update_interval_s = clampf(update_interval_s, 0.05, 1.0)
+	_update_accumulator = 0.0
+	_last_target_position = Vector3.INF
 	_configured = _height_sampler.is_valid() and _terrain_base_y_sampler.is_valid()
 	set_process(_configured and _enabled)
 	if _configured and _enabled and is_inside_tree():
@@ -182,8 +186,6 @@ func _refresh_desired_patches(target_position: Vector3) -> void:
 				continue
 			desired[coord] = true
 
-	# Retire old bodies before acquiring new ones so the pool is reused within
-	# the same refresh instead of temporarily growing on every patch boundary.
 	var active_coords: Array = _active_patches.keys()
 	for untyped_coord in active_coords:
 		var active_coord: Vector2i = untyped_coord

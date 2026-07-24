@@ -101,3 +101,6 @@ jobs:
 
       - name: Long-session stress tests
         run: ./godot --headless --path . --script addons/island_terrain/test/long_session_stress_test.gd
+
+      - name: Hardening facade tests
+        run: ./godot --headless --path . --script addons/island_terrain/test/hardening_facade_test.gd

@@ -41,6 +41,7 @@ func _test_deterministic_generation() -> void:
 	_check(first.height_data == second.height_data, "generation is not deterministic for identical seed/profile")
 	_check(first.biome_data == second.biome_data, "biome classification is not deterministic")
 	_check(first.river_mask == second.river_mask, "river graph is not deterministic")
+	_check(first.flow_accumulation == second.flow_accumulation, "flow accumulation is not deterministic")
 	_check(first.estimated_memory_bytes() < 256 * 1024, "65² generation result exceeded expected memory envelope")
 
 	var land_count: int = 0
@@ -63,7 +64,10 @@ func _test_deterministic_generation() -> void:
 	_check(maximum_height > 0.20, "generation produced insufficient elevation range")
 	_check(biome_types.size() >= 3, "generation produced insufficient biome diversity")
 	_check(river_pixels > 0, "generation produced no river pixels with test threshold")
-	_check(first.flow_accumulation.is_empty(), "temporary flow accumulation was not released after completion")
+	_check(
+		first.flow_accumulation.size() == first.resolution * first.resolution,
+		"flow accumulation metadata size mismatch"
+	)
 
 	var image: Image = first.create_height_image(false)
 	_check(image != null and image.get_width() == 65 and image.get_height() == 65, "height image conversion failed")

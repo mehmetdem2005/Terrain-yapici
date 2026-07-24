@@ -115,15 +115,18 @@ func _build_and_apply_delta(
 	region: RegionData,
 	rect: Rect2i
 ) -> RegionDelta:
-	var source: PackedFloat32Array = region.height_data.duplicate()
+	var needs_snapshot: bool = command.tool == SculptCommand.Tool.SMOOTH
+	var source: PackedFloat32Array = region.height_data.duplicate() \
+		if needs_snapshot else region.height_data
 	var source_valid := PackedByteArray()
-	source_valid.resize(region.sample_count * region.sample_count)
-	if region.height_is_dense:
-		source_valid.fill(1)
-	elif region.height_valid_mask.size() == source_valid.size():
-		source_valid = region.height_valid_mask.duplicate()
-	else:
-		source_valid.fill(0)
+	if needs_snapshot:
+		source_valid.resize(region.sample_count * region.sample_count)
+		if region.height_is_dense:
+			source_valid.fill(1)
+		elif region.height_valid_mask.size() == source_valid.size():
+			source_valid = region.height_valid_mask.duplicate()
+		else:
+			source_valid.fill(0)
 
 	if not region.height_is_dense:
 		region.ensure_channel(&"height_valid")
@@ -145,7 +148,8 @@ func _build_and_apply_delta(
 			var pixel := Vector2i(x, y)
 			var linear_index: int = y * region.sample_count + x
 			var world_pos: Vector3 = _coordinates.region_pixel_to_world(coord, pixel)
-			var was_valid: bool = source_valid[linear_index] != 0
+			var was_valid: bool = source_valid[linear_index] != 0 \
+				if needs_snapshot else region.is_height_valid(pixel)
 			var old_height: float = source[linear_index] if was_valid else _sample_base_height(world_pos)
 			var distance_m: float = Vector2(world_pos.x, world_pos.z).distance_to(center_xz)
 			var weight: float = command.weight_for_distance(distance_m)

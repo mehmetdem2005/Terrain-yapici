@@ -9,6 +9,8 @@ signal memory_size_changed(previous_bytes: int, current_bytes: int)
 @export var coord: Vector2i = Vector2i.ZERO
 @export var sample_count: int = Constants.DEFAULT_REGION_SAMPLES
 @export var height_data: PackedFloat32Array = PackedFloat32Array()
+@export var height_valid_mask: PackedByteArray = PackedByteArray()
+@export var height_is_dense: bool = false
 @export var material_index_data: PackedByteArray = PackedByteArray()
 @export var material_weight_data: PackedByteArray = PackedByteArray()
 @export var biome_data: PackedByteArray = PackedByteArray()
@@ -28,6 +30,8 @@ func initialize(p_coord: Vector2i, p_sample_count: int) -> void:
 	var count: int = sample_count * sample_count
 	height_data.resize(count)
 	height_data.fill(0.0)
+	height_valid_mask = PackedByteArray()
+	height_is_dense = false
 	revision = 1
 	checksum = 0
 	_emit_memory_change(previous_bytes)
@@ -37,6 +41,10 @@ func ensure_channel(channel_name: StringName) -> void:
 	var previous_bytes: int = estimated_memory_bytes()
 	var pixel_count: int = sample_count * sample_count
 	match channel_name:
+		&"height_valid":
+			if not height_is_dense and height_valid_mask.size() != pixel_count:
+				height_valid_mask.resize(pixel_count)
+				height_valid_mask.fill(0)
 		&"material_index":
 			if material_index_data.size() != pixel_count:
 				material_index_data.resize(pixel_count)
@@ -86,6 +94,8 @@ func validate_dimensions() -> PackedStringArray:
 	var expected: int = sample_count * sample_count
 	if height_data.size() != expected:
 		errors.append("height_data size mismatch: expected %d, got %d" % [expected, height_data.size()])
+	if not height_valid_mask.is_empty() and height_valid_mask.size() != expected:
+		errors.append("height_valid_mask size mismatch")
 	if not material_index_data.is_empty() and material_index_data.size() != expected:
 		errors.append("material_index_data size mismatch")
 	if not material_weight_data.is_empty() and material_weight_data.size() != expected * 4:
@@ -103,21 +113,54 @@ func validate_dimensions() -> PackedStringArray:
 	return errors
 
 
+func is_height_valid(pixel: Vector2i) -> bool:
+	if pixel.x < 0 or pixel.y < 0 or pixel.x >= sample_count or pixel.y >= sample_count:
+		return false
+	if height_is_dense:
+		return true
+	if height_valid_mask.is_empty():
+		return false
+	return height_valid_mask[pixel.y * sample_count + pixel.x] != 0
+
+
 func get_height(pixel: Vector2i) -> float:
 	if pixel.x < 0 or pixel.y < 0 or pixel.x >= sample_count or pixel.y >= sample_count:
 		return 0.0
 	return height_data[pixel.y * sample_count + pixel.x]
 
 
-func set_height(pixel: Vector2i, value: float) -> void:
+func set_height(pixel: Vector2i, value: float, dense: bool = false) -> void:
 	if pixel.x < 0 or pixel.y < 0 or pixel.x >= sample_count or pixel.y >= sample_count:
 		return
-	height_data[pixel.y * sample_count + pixel.x] = value
+	var previous_bytes: int = estimated_memory_bytes()
+	var index: int = pixel.y * sample_count + pixel.x
+	height_data[index] = value
+	if dense:
+		height_is_dense = true
+		height_valid_mask = PackedByteArray()
+	else:
+		if height_valid_mask.size() != sample_count * sample_count:
+			height_valid_mask.resize(sample_count * sample_count)
+			height_valid_mask.fill(0)
+		height_valid_mask[index] = 1
 	revision += 1
+	_emit_memory_change(previous_bytes)
+
+
+func set_height_valid(pixel: Vector2i, valid: bool) -> void:
+	if height_is_dense or pixel.x < 0 or pixel.y < 0 or pixel.x >= sample_count or pixel.y >= sample_count:
+		return
+	var previous_bytes: int = estimated_memory_bytes()
+	if height_valid_mask.size() != sample_count * sample_count:
+		height_valid_mask.resize(sample_count * sample_count)
+		height_valid_mask.fill(0)
+	height_valid_mask[pixel.y * sample_count + pixel.x] = 1 if valid else 0
+	_emit_memory_change(previous_bytes)
 
 
 func estimated_memory_bytes() -> int:
 	return height_data.size() * 4 \
+		+ height_valid_mask.size() \
 		+ material_index_data.size() \
 		+ material_weight_data.size() \
 		+ biome_data.size() \

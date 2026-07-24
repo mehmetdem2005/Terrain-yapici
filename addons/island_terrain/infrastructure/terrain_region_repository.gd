@@ -147,10 +147,18 @@ func _load_validated_region(path: String, coord: Vector2i) -> RegionData:
 	if not errors.is_empty():
 		push_error("IT-003: Corrupt region %s at %s: %s" % [coord, path, "; ".join(errors)])
 		return null
-	var expected_checksum: int = _calculate_checksum(loaded.height_data)
-	if loaded.checksum != 0 and loaded.checksum != expected_checksum:
-		push_error("IT-009: Region checksum mismatch for %s at %s" % [coord, path])
-		return null
+	if loaded.checksum != 0:
+		var current_checksum: int = _calculate_checksum(loaded)
+		if loaded.checksum != current_checksum:
+			var legacy_checksum: int = _calculate_legacy_height_checksum(loaded.height_data)
+			if loaded.height_valid_mask.is_empty() \
+				and not loaded.height_is_dense \
+				and loaded.checksum == legacy_checksum:
+				loaded.height_is_dense = true
+				loaded.checksum = _calculate_checksum(loaded)
+			else:
+				push_error("IT-009: Region checksum mismatch for %s at %s" % [coord, path])
+				return null
 	return loaded
 
 
@@ -159,7 +167,7 @@ func _save_region(coord: Vector2i, region: RegionData) -> Error:
 	var final_path: String = writable_region_file_path(coord)
 	var temporary_path: String = _temporary_path(final_path)
 	var backup_path: String = _backup_path(final_path)
-	var expected_checksum: int = _calculate_checksum(region.height_data)
+	var expected_checksum: int = _calculate_checksum(region)
 	region.checksum = expected_checksum
 	_remove_if_exists(temporary_path)
 	var save_error: Error = ResourceSaver.save(region, temporary_path, ResourceSaver.FLAG_COMPRESS)
@@ -169,7 +177,9 @@ func _save_region(coord: Vector2i, region: RegionData) -> Error:
 	if verified == null:
 		_remove_if_exists(temporary_path)
 		return ERR_FILE_CORRUPT
-	if not verified.validate_dimensions().is_empty() or verified.checksum != expected_checksum:
+	if not verified.validate_dimensions().is_empty() \
+		or verified.checksum != expected_checksum \
+		or _calculate_checksum(verified) != expected_checksum:
 		_remove_if_exists(temporary_path)
 		return ERR_FILE_CORRUPT
 	var final_absolute: String = ProjectSettings.globalize_path(final_path)
@@ -318,5 +328,13 @@ func _remove_if_exists(path: String) -> void:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
-func _calculate_checksum(values: PackedFloat32Array) -> int:
+func _calculate_checksum(region: RegionData) -> int:
+	return int(hash([
+		region.height_data,
+		region.height_valid_mask,
+		region.height_is_dense,
+	])) & 0x7fffffff
+
+
+func _calculate_legacy_height_checksum(values: PackedFloat32Array) -> int:
 	return int(hash(values)) & 0x7fffffff

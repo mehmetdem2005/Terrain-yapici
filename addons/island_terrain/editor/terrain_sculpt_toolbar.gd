@@ -4,6 +4,7 @@ class_name IslandTerrainSculptToolbar
 
 signal undo_requested
 signal redo_requested
+signal sculpt_mode_changed(enabled: bool)
 
 const SculptCommand = preload("res://addons/island_terrain/application/terrain_sculpt_command.gd")
 
@@ -27,7 +28,7 @@ func is_sculpt_enabled() -> bool:
 
 
 func selected_tool() -> int:
-	return _tool_selector.selected if _tool_selector != null else SculptCommand.Tool.RAISE
+	return _tool_selector.get_selected_id() if _tool_selector != null else SculptCommand.Tool.RAISE
 
 
 func brush_radius_m() -> float:
@@ -72,6 +73,7 @@ func _build_ui() -> void:
 	_enabled_toggle = CheckButton.new()
 	_enabled_toggle.text = "Sculpt Modu"
 	_enabled_toggle.custom_minimum_size.y = 52.0 * EditorInterface.get_editor_scale()
+	_enabled_toggle.toggled.connect(func(enabled: bool) -> void: sculpt_mode_changed.emit(enabled))
 	add_child(_enabled_toggle)
 
 	_tool_selector = OptionButton.new()

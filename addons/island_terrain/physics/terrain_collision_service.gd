@@ -78,6 +78,36 @@ func set_tracking_target(target: Node3D) -> void:
 		call_deferred("refresh_now")
 
 
+func set_collision_radius_m(value: float) -> void:
+	var minimum_radius: float = float(_patch_size_m)
+	var sanitized: float = clampf(value, minimum_radius, 512.0)
+	if is_equal_approx(sanitized, _collision_radius_m):
+		return
+	_collision_radius_m = sanitized
+	_last_target_position = Vector3.INF
+	if _configured and _enabled and is_inside_tree():
+		call_deferred("refresh_now")
+
+
+func get_collision_radius_m() -> float:
+	return _collision_radius_m
+
+
+func get_patch_size_m() -> int:
+	return _patch_size_m
+
+
+func trim_pool(max_pooled_bodies: int = 0) -> int:
+	var safe_max: int = maxi(0, max_pooled_bodies)
+	var released: int = 0
+	while _patch_pool.size() > safe_max:
+		var body: StaticBody3D = _patch_pool.pop_back()
+		if is_instance_valid(body):
+			body.queue_free()
+			released += 1
+	return released
+
+
 func refresh_now() -> void:
 	if not _configured or not _enabled or not is_inside_tree():
 		return

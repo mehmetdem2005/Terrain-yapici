@@ -2,9 +2,13 @@
 extends RefCounted
 class_name IslandTerrainGenerationJob
 
+const Constants = preload("res://addons/island_terrain/core/terrain_constants.gd")
 const Manifest = preload("res://addons/island_terrain/core/terrain_manifest.gd")
 const Profile = preload("res://addons/island_terrain/generation/terrain_generation_profile.gd")
 const Result = preload("res://addons/island_terrain/generation/terrain_generation_result.gd")
+
+const FLOW_BUCKET_COUNT: int = 4096
+const FLOW_CHUNK_SIZE: int = 4096
 
 enum Stage {
 	IDLE,
@@ -13,6 +17,8 @@ enum Stage {
 	EROSION,
 	FLOW_PREPARE,
 	FLOW_DIRECTION,
+	FLOW_ORDER_PREPARE,
+	FLOW_ORDER_FILL,
 	FLOW_ACCUMULATION,
 	RIVER_CARVE,
 	BIOME_CLASSIFICATION,
@@ -31,9 +37,11 @@ var _row: int = 0
 var _erosion_iteration: int = 0
 var _erosion_scratch: PackedFloat32Array = PackedFloat32Array()
 var _downstream: PackedInt32Array = PackedInt32Array()
-var _height_buckets: Array = []
-var _accumulation_bucket: int = 255
-var _accumulation_item: int = 0
+var _height_bucket_counts: PackedInt32Array = PackedInt32Array()
+var _height_bucket_offsets: PackedInt32Array = PackedInt32Array()
+var _height_bucket_cursors: PackedInt32Array = PackedInt32Array()
+var _height_order: PackedInt32Array = PackedInt32Array()
+var _flow_cursor: int = -1
 var _broad_noise: FastNoiseLite
 var _ridge_noise: FastNoiseLite
 var _coast_noise: FastNoiseLite
@@ -42,7 +50,11 @@ var _error_message: String = ""
 
 
 func begin(manifest: Manifest, profile: Profile, resolution: int) -> Error:
-	if manifest == null or profile == null or resolution < 3:
+	if manifest == null or profile == null:
+		return ERR_INVALID_PARAMETER
+	if not Constants.is_valid_sample_count(resolution):
+		_error_message = "generation resolution must be 2^n + 1"
+		_stage = Stage.FAILED
 		return ERR_INVALID_PARAMETER
 	var manifest_errors: PackedStringArray = manifest.validate()
 	if not manifest_errors.is_empty():
@@ -63,6 +75,7 @@ func begin(manifest: Manifest, profile: Profile, resolution: int) -> Error:
 	_setup_noise()
 	_row = 0
 	_erosion_iteration = 0
+	_error_message = ""
 	_stage = Stage.SHAPE
 	return OK
 
@@ -81,7 +94,7 @@ func process_budget(budget_usec: int) -> void:
 
 
 func cancel() -> void:
-	if _stage not in [Stage.COMPLETE, Stage.FAILED]:
+	if _stage not in [Stage.COMPLETE, Stage.FAILED, Stage.CANCELLED]:
 		_stage = Stage.CANCELLED
 	_release_working_data()
 
@@ -118,7 +131,8 @@ func stage_name() -> String:
 			return "Island Shape"
 		Stage.EROSION_PREPARE, Stage.EROSION:
 			return "Thermal Erosion"
-		Stage.FLOW_PREPARE, Stage.FLOW_DIRECTION, Stage.FLOW_ACCUMULATION:
+		Stage.FLOW_PREPARE, Stage.FLOW_DIRECTION, Stage.FLOW_ORDER_PREPARE, \
+		Stage.FLOW_ORDER_FILL, Stage.FLOW_ACCUMULATION:
 			return "River Flow"
 		Stage.RIVER_CARVE:
 			return "River Carving"
@@ -141,7 +155,8 @@ func progress() -> float:
 		Stage.SHAPE:
 			return row_fraction * 0.30
 		Stage.EROSION_PREPARE:
-			return 0.30 + float(_erosion_iteration) / float(maxi(1, _profile.thermal_iterations)) * 0.20
+			return 0.30 + float(_erosion_iteration) \
+				/ float(maxi(1, _profile.thermal_iterations)) * 0.20
 		Stage.EROSION:
 			var iteration_fraction: float = (
 				float(_erosion_iteration) + row_fraction
@@ -150,9 +165,15 @@ func progress() -> float:
 		Stage.FLOW_PREPARE:
 			return 0.50
 		Stage.FLOW_DIRECTION:
-			return 0.50 + row_fraction * 0.15
+			return 0.50 + row_fraction * 0.08
+		Stage.FLOW_ORDER_PREPARE:
+			return 0.58
+		Stage.FLOW_ORDER_FILL:
+			return 0.58 + row_fraction * 0.06
 		Stage.FLOW_ACCUMULATION:
-			return 0.65 + (1.0 - float(maxi(_accumulation_bucket, 0)) / 255.0) * 0.10
+			var count: int = maxi(1, _resolution * _resolution)
+			var completed: float = 1.0 - float(maxi(_flow_cursor, 0)) / float(count)
+			return 0.64 + completed * 0.11
 		Stage.RIVER_CARVE:
 			return 0.75 + row_fraction * 0.10
 		Stage.BIOME_CLASSIFICATION:
@@ -168,9 +189,10 @@ func estimated_working_memory_bytes() -> int:
 	var bytes: int = _result.estimated_memory_bytes() if _result != null else 0
 	bytes += _erosion_scratch.size() * 4
 	bytes += _downstream.size() * 4
-	for bucket_variant in _height_buckets:
-		var bucket: PackedInt32Array = bucket_variant
-		bytes += bucket.size() * 4
+	bytes += _height_bucket_counts.size() * 4
+	bytes += _height_bucket_offsets.size() * 4
+	bytes += _height_bucket_cursors.size() * 4
+	bytes += _height_order.size() * 4
 	return bytes
 
 
@@ -186,6 +208,10 @@ func _step() -> void:
 			_prepare_flow()
 		Stage.FLOW_DIRECTION:
 			_step_flow_direction()
+		Stage.FLOW_ORDER_PREPARE:
+			_prepare_flow_order()
+		Stage.FLOW_ORDER_FILL:
+			_step_flow_order_fill()
 		Stage.FLOW_ACCUMULATION:
 			_step_flow_accumulation()
 		Stage.RIVER_CARVE:
@@ -200,7 +226,10 @@ func _setup_noise() -> void:
 	_broad_noise = FastNoiseLite.new()
 	_broad_noise.seed = _manifest.world_seed
 	_broad_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	_broad_noise.frequency = 1.0 / maxf(64.0, _world_size_m * _profile.broad_world_frequency_factor)
+	_broad_noise.frequency = 1.0 / maxf(
+		64.0,
+		_world_size_m * _profile.broad_world_frequency_factor
+	)
 	_broad_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
 	_broad_noise.fractal_octaves = _profile.broad_octaves
 	_broad_noise.fractal_gain = _profile.fractal_gain
@@ -209,7 +238,10 @@ func _setup_noise() -> void:
 	_ridge_noise = FastNoiseLite.new()
 	_ridge_noise.seed = _manifest.world_seed ^ 0x5f3759df
 	_ridge_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
-	_ridge_noise.frequency = 1.0 / maxf(32.0, _world_size_m * _profile.ridge_world_frequency_factor)
+	_ridge_noise.frequency = 1.0 / maxf(
+		32.0,
+		_world_size_m * _profile.ridge_world_frequency_factor
+	)
 	_ridge_noise.fractal_type = FastNoiseLite.FRACTAL_RIDGED
 	_ridge_noise.fractal_octaves = _profile.ridge_octaves
 	_ridge_noise.fractal_gain = clampf(_profile.fractal_gain + 0.04, 0.10, 0.90)
@@ -260,8 +292,10 @@ func _step_shape() -> void:
 			+ broad * _profile.broad_elevation_weight
 			+ ridge * _profile.ridge_weight
 		) - 0.08
-		var height_value: float = pow(clampf(raw_height, 0.0, 1.0), _profile.height_exponent) \
-			* _profile.output_height_scale
+		var height_value: float = pow(
+			clampf(raw_height, 0.0, 1.0),
+			_profile.height_exponent
+		) * _profile.output_height_scale
 		_result.height_data[_row * _resolution + x] = clampf(height_value, 0.0, 1.0)
 	_row += 1
 
@@ -283,30 +317,38 @@ func _step_erosion() -> void:
 		_erosion_iteration += 1
 		_stage = Stage.EROSION_PREPARE
 		return
-	var talus_normalized: float = _profile.thermal_talus_m / maxf(_manifest.max_height_m, 0.001)
+	var talus_normalized: float = _profile.thermal_talus_m \
+		/ maxf(_manifest.max_height_m, 0.001)
 	for x in range(1, _resolution - 1):
 		var index: int = _row * _resolution + x
 		var height: float = _result.height_data[index]
 		if height <= 0.001:
 			continue
-		var target_index: int = -1
-		var max_difference: float = 0.0
-		var neighbor_indices := PackedInt32Array([
-			index - 1,
-			index + 1,
-			index - _resolution,
-			index + _resolution,
-		])
-		for neighbor_index in neighbor_indices:
-			var difference: float = height - _result.height_data[neighbor_index]
-			if difference > max_difference:
-				max_difference = difference
-				target_index = neighbor_index
-		if target_index >= 0 and max_difference > talus_normalized:
+		var target_index: int = index - 1
+		var max_difference: float = height - _result.height_data[target_index]
+		var candidate_index: int = index + 1
+		var difference: float = height - _result.height_data[candidate_index]
+		if difference > max_difference:
+			max_difference = difference
+			target_index = candidate_index
+		candidate_index = index - _resolution
+		difference = height - _result.height_data[candidate_index]
+		if difference > max_difference:
+			max_difference = difference
+			target_index = candidate_index
+		candidate_index = index + _resolution
+		difference = height - _result.height_data[candidate_index]
+		if difference > max_difference:
+			max_difference = difference
+			target_index = candidate_index
+		if max_difference > talus_normalized:
 			var transfer: float = (max_difference - talus_normalized) \
 				* _profile.thermal_transfer_rate
 			_erosion_scratch[index] = maxf(0.0, _erosion_scratch[index] - transfer)
-			_erosion_scratch[target_index] = minf(1.0, _erosion_scratch[target_index] + transfer)
+			_erosion_scratch[target_index] = minf(
+				1.0,
+				_erosion_scratch[target_index] + transfer
+			)
 	_row += 1
 
 
@@ -316,27 +358,27 @@ func _prepare_flow() -> void:
 	_downstream.fill(-1)
 	_result.flow_accumulation.resize(count)
 	_result.flow_accumulation.fill(1.0)
-	_height_buckets.clear()
-	_height_buckets.resize(256)
-	for bucket_index in range(256):
-		_height_buckets[bucket_index] = PackedInt32Array()
+	_height_bucket_counts.resize(FLOW_BUCKET_COUNT)
+	_height_bucket_counts.fill(0)
+	_height_bucket_offsets.resize(FLOW_BUCKET_COUNT + 1)
+	_height_bucket_offsets.fill(0)
+	_height_bucket_cursors.resize(FLOW_BUCKET_COUNT)
+	_height_bucket_cursors.fill(0)
+	_height_order.resize(count)
+	_height_order.fill(-1)
 	_row = 0
 	_stage = Stage.FLOW_DIRECTION
 
 
 func _step_flow_direction() -> void:
 	if _row >= _resolution:
-		_accumulation_bucket = 255
-		_accumulation_item = 0
-		_stage = Stage.FLOW_ACCUMULATION
+		_stage = Stage.FLOW_ORDER_PREPARE
 		return
 	for x in range(_resolution):
 		var index: int = _row * _resolution + x
 		var height: float = _result.height_data[index]
-		var bucket_index: int = clampi(roundi(height * 255.0), 0, 255)
-		var bucket: PackedInt32Array = _height_buckets[bucket_index]
-		bucket.append(index)
-		_height_buckets[bucket_index] = bucket
+		var bucket: int = _height_bucket_for(height)
+		_height_bucket_counts[bucket] += 1
 		var lowest_height: float = height
 		var lowest_index: int = -1
 		for offset_y in range(-1, 2):
@@ -357,25 +399,46 @@ func _step_flow_direction() -> void:
 	_row += 1
 
 
+func _prepare_flow_order() -> void:
+	var running_offset: int = 0
+	for bucket in range(FLOW_BUCKET_COUNT):
+		_height_bucket_offsets[bucket] = running_offset
+		_height_bucket_cursors[bucket] = running_offset
+		running_offset += _height_bucket_counts[bucket]
+	_height_bucket_offsets[FLOW_BUCKET_COUNT] = running_offset
+	_row = 0
+	_stage = Stage.FLOW_ORDER_FILL
+
+
+func _step_flow_order_fill() -> void:
+	if _row >= _resolution:
+		_flow_cursor = _height_order.size() - 1
+		_stage = Stage.FLOW_ACCUMULATION
+		return
+	for x in range(_resolution):
+		var index: int = _row * _resolution + x
+		var bucket: int = _height_bucket_for(_result.height_data[index])
+		var order_index: int = _height_bucket_cursors[bucket]
+		_height_order[order_index] = index
+		_height_bucket_cursors[bucket] = order_index + 1
+	_row += 1
+
+
 func _step_flow_accumulation() -> void:
 	var processed: int = 0
-	while _accumulation_bucket >= 0 and processed < 2048:
-		var bucket: PackedInt32Array = _height_buckets[_accumulation_bucket]
-		while _accumulation_item < bucket.size() and processed < 2048:
-			var index: int = bucket[_accumulation_item]
-			var downstream_index: int = _downstream[index]
-			if downstream_index >= 0:
-				_result.flow_accumulation[downstream_index] += _result.flow_accumulation[index]
-			_accumulation_item += 1
-			processed += 1
-		if _accumulation_item >= bucket.size():
-			_accumulation_bucket -= 1
-			_accumulation_item = 0
-	if _accumulation_bucket < 0:
-		_height_buckets.clear()
-		_downstream = PackedInt32Array()
+	while _flow_cursor >= 0 and processed < FLOW_CHUNK_SIZE:
+		var index: int = _height_order[_flow_cursor]
+		var downstream_index: int = _downstream[index]
+		if downstream_index >= 0:
+			_result.flow_accumulation[downstream_index] += \
+				_result.flow_accumulation[index]
+		_flow_cursor -= 1
+		processed += 1
+	if _flow_cursor < 0:
+		_clear_flow_sort_working_data()
 		_row = 0
-		_stage = Stage.RIVER_CARVE if _profile.rivers_enabled else Stage.BIOME_CLASSIFICATION
+		_stage = Stage.RIVER_CARVE \
+			if _profile.rivers_enabled else Stage.BIOME_CLASSIFICATION
 
 
 func _step_river_carve() -> void:
@@ -385,7 +448,8 @@ func _step_river_carve() -> void:
 		return
 	var threshold: float = float(_resolution * _resolution) \
 		* _profile.river_accumulation_fraction
-	var depth_normalized: float = _profile.river_depth_m / maxf(_manifest.max_height_m, 0.001)
+	var depth_normalized: float = _profile.river_depth_m \
+		/ maxf(_manifest.max_height_m, 0.001)
 	for x in range(_resolution):
 		var index: int = _row * _resolution + x
 		var height: float = _result.height_data[index]
@@ -393,7 +457,10 @@ func _step_river_carve() -> void:
 		if height <= _profile.river_min_elevation or flow <= threshold:
 			continue
 		var intensity: float = smoothstep(threshold, threshold * 8.0, flow)
-		_result.height_data[index] = maxf(0.0, height - depth_normalized * intensity)
+		_result.height_data[index] = maxf(
+			0.0,
+			height - depth_normalized * intensity
+		)
 		_result.river_mask[index] = clampi(roundi(intensity * 255.0), 0, 255)
 	_row += 1
 
@@ -411,26 +478,47 @@ func _step_biome_classification() -> void:
 		var height: float = _result.height_data[index]
 		var normalized_x: float = float(x) / denominator * 2.0 - 1.0
 		var world_x: float = normalized_x * _world_size_m * 0.5
-		var noise_moisture: float = (_moisture_noise.get_noise_2d(world_x, world_z) + 1.0) * 0.5
+		var noise_moisture: float = (
+			_moisture_noise.get_noise_2d(world_x, world_z) + 1.0
+		) * 0.5
 		var river_influence: float = float(_result.river_mask[index]) / 255.0
 		var lowland_moisture: float = 1.0 - smoothstep(0.10, 0.50, height)
 		var moisture: float = clampf(
-			noise_moisture * 0.58 + river_influence * 0.85 + lowland_moisture * 0.20,
+			noise_moisture * 0.58
+			+ river_influence * 0.85
+			+ lowland_moisture * 0.20,
 			0.0,
 			1.0
 		)
 		_result.moisture_data[index] = clampi(roundi(moisture * 255.0), 0, 255)
 		var slope: float = _sample_slope(x, _row)
-		_result.biome_data[index] = _classify_biome(height, slope, moisture, river_influence)
+		_result.biome_data[index] = _classify_biome(
+			height,
+			slope,
+			moisture,
+			river_influence
+		)
 	_row += 1
+
+
+func _height_bucket_for(height: float) -> int:
+	return clampi(
+		floori(clampf(height, 0.0, 1.0) * float(FLOW_BUCKET_COUNT - 1)),
+		0,
+		FLOW_BUCKET_COUNT - 1
+	)
 
 
 func _sample_slope(x: int, y: int) -> float:
 	var center: float = _result.height_data[y * _resolution + x]
 	var left: float = _result.height_data[y * _resolution + maxi(0, x - 1)]
-	var right: float = _result.height_data[y * _resolution + mini(_resolution - 1, x + 1)]
+	var right: float = _result.height_data[
+		y * _resolution + mini(_resolution - 1, x + 1)
+	]
 	var down: float = _result.height_data[maxi(0, y - 1) * _resolution + x]
-	var up: float = _result.height_data[mini(_resolution - 1, y + 1) * _resolution + x]
+	var up: float = _result.height_data[
+		mini(_resolution - 1, y + 1) * _resolution + x
+	]
 	return maxf(
 		maxf(absf(center - left), absf(center - right)),
 		maxf(absf(center - down), absf(center - up))
@@ -460,10 +548,18 @@ func _classify_biome(
 	return Result.Biome.GRASSLAND
 
 
+func _clear_flow_sort_working_data() -> void:
+	_downstream = PackedInt32Array()
+	_height_bucket_counts = PackedInt32Array()
+	_height_bucket_offsets = PackedInt32Array()
+	_height_bucket_cursors = PackedInt32Array()
+	_height_order = PackedInt32Array()
+	_flow_cursor = -1
+
+
 func _release_working_data() -> void:
 	_erosion_scratch = PackedFloat32Array()
-	_downstream = PackedInt32Array()
-	_height_buckets.clear()
+	_clear_flow_sort_working_data()
 	_broad_noise = null
 	_ridge_noise = null
 	_coast_noise = null

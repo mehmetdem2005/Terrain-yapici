@@ -6,6 +6,8 @@ const RegionData = preload("res://addons/island_terrain/core/terrain_region_data
 
 var coord: Vector2i = Vector2i.ZERO
 var rect: Rect2i = Rect2i()
+var affects_biome: bool = false
+var affects_material: bool = false
 var before_biome: PackedByteArray = PackedByteArray()
 var after_biome: PackedByteArray = PackedByteArray()
 var before_biome_strength: PackedByteArray = PackedByteArray()
@@ -19,6 +21,8 @@ var after_material_strength: PackedByteArray = PackedByteArray()
 func configure(
 	p_coord: Vector2i,
 	p_rect: Rect2i,
+	p_affects_biome: bool,
+	p_affects_material: bool,
 	p_before_biome: PackedByteArray,
 	p_after_biome: PackedByteArray,
 	p_before_biome_strength: PackedByteArray,
@@ -30,6 +34,8 @@ func configure(
 ) -> void:
 	coord = p_coord
 	rect = p_rect
+	affects_biome = p_affects_biome
+	affects_material = p_affects_material
 	before_biome = p_before_biome
 	after_biome = p_after_biome
 	before_biome_strength = p_before_biome_strength
@@ -42,15 +48,23 @@ func configure(
 
 func is_valid() -> bool:
 	var expected: int = rect.size.x * rect.size.y
-	return rect.size.x > 0 and rect.size.y > 0 \
-		and before_biome.size() == expected \
-		and after_biome.size() == expected \
-		and before_biome_strength.size() == expected \
-		and after_biome_strength.size() == expected \
-		and before_material.size() == expected \
-		and after_material.size() == expected \
-		and before_material_strength.size() == expected \
-		and after_material_strength.size() == expected
+	if rect.size.x <= 0 or rect.size.y <= 0 or not affects_biome and not affects_material:
+		return false
+	if affects_biome and (
+		before_biome.size() != expected
+		or after_biome.size() != expected
+		or before_biome_strength.size() != expected
+		or after_biome_strength.size() != expected
+	):
+		return false
+	if affects_material and (
+		before_material.size() != expected
+		or after_material.size() != expected
+		or before_material_strength.size() != expected
+		or after_material_strength.size() != expected
+	):
+		return false
+	return true
 
 
 func memory_bytes() -> int:
@@ -92,19 +106,23 @@ func _apply(
 	if rect.position.x < 0 or rect.position.y < 0 \
 		or rect.end.x > region.sample_count or rect.end.y > region.sample_count:
 		return ERR_INVALID_PARAMETER
-	region.ensure_channel(&"biome")
-	region.ensure_channel(&"biome_valid")
-	region.ensure_channel(&"material_index")
-	region.ensure_channel(&"material_valid")
+	if affects_biome:
+		region.ensure_channel(&"biome")
+		region.ensure_channel(&"biome_valid")
+	if affects_material:
+		region.ensure_channel(&"material_index")
+		region.ensure_channel(&"material_valid")
 	var source_index: int = 0
 	for y in range(rect.position.y, rect.end.y):
 		var target_index: int = y * region.sample_count + rect.position.x
 		for x in range(rect.size.x):
 			var index: int = target_index + x
-			region.biome_data[index] = biome_values[source_index]
-			region.biome_valid_mask[index] = biome_strength[source_index]
-			region.material_index_data[index] = material_values[source_index]
-			region.material_valid_mask[index] = material_strength[source_index]
+			if affects_biome:
+				region.biome_data[index] = biome_values[source_index]
+				region.biome_valid_mask[index] = biome_strength[source_index]
+			if affects_material:
+				region.material_index_data[index] = material_values[source_index]
+				region.material_valid_mask[index] = material_strength[source_index]
 			source_index += 1
 	region.revision += 1
 	return OK

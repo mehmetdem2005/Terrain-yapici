@@ -2,7 +2,7 @@
 extends RefCounted
 class_name IslandTerrainConstants
 
-const DATA_FORMAT_VERSION: int = 2
+const DATA_FORMAT_VERSION: int = 3
 const DEFAULT_WORLD_SIZE_M: int = 4096
 const DEFAULT_REGION_SIZE_M: int = 256
 const DEFAULT_REGION_SAMPLES: int = 257
@@ -24,6 +24,7 @@ const DEFAULT_FRAME_WORK_BUDGET_MS: float = 2.0
 const MAX_FRAME_WORK_BUDGET_MS: float = 4.0
 const DEFAULT_MAX_CACHED_REGIONS: int = 9
 const DEFAULT_COLLISION_RADIUS_M: float = 96.0
+const DEFAULT_EDIT_TRANSACTION_BYTES: int = 8 * 1024 * 1024
 
 const DIAGNOSTIC_PREFIX: String = "IT-"
 

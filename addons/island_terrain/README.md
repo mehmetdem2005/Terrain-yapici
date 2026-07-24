@@ -6,12 +6,12 @@ Godot 4.6.3 Mobile Renderer için 4 km hayatta kalma adası terrain editörü.
 
 - 4 km dünya ve 256 m region düzeni
 - 257×257 region height verisi
-- Sparse height validity, material, biome, wetness, hole ve foliage kanalları
+- Sparse height, biome, material, wetness, hole ve foliage kanalları
 - Canlı RAM muhasebesi ve temiz-region LRU tahliyesi
 - Kirli region veri koruması
 - `res://` kaynak ve `user://` runtime copy-on-write depolama
 - Geçici dosya, birleşik checksum, yedek ve terfi kullanan atomik kayıt
-- Region format v1 → v2 otomatik migration
+- Region format v1/v2 → v3 migration
 - Geometry clipmap merkez grid’i, içi boş LOD halkaları ve dış etekler
 - Kare başına en fazla bir LOD oluşturma
 - Tek ShaderMaterial ve instance LOD uniform’ları
@@ -40,12 +40,6 @@ Generation sonucu normalize height, moisture, biome, river mask ve flow accumula
 - `get_river_mask_at_world()`
 - `get_flow_accumulation_at_world()`
 
-## Allocation preflight
-
-Generation başlamadan önce mevcut resident terrain belleği ile generation ve material metadata peak çalışma belleği birlikte tahmin edilir. Tahmin, cihaz profilindeki güvenli RAM zarfını aşarsa büyük `PackedArray` dizileri ayrılmadan işlem `ERR_OUT_OF_MEMORY` ile reddedilir.
-
-Düşük, dengeli ve yüksek profiller ayrı terrain RAM/VRAM bütçelerine ve safety ratio değerlerine sahiptir. Bu değerler Inspector’dan görülebilir; telefonlarda `Balanced` dışına profiler sonucu olmadan çıkılmamalıdır.
-
 ## Biyom material sistemi
 
 `IslandTerrainMaterialRuntime`, generation metadata’sını RGBA8 texture’a kare bütçeli biçimde encode eder:
@@ -55,54 +49,52 @@ Düşük, dengeli ve yüksek profiller ayrı terrain RAM/VRAM bütçelerine ve s
 - B: nehir maskesi
 - A: log-normalize flow accumulation
 
-Varsayılan backend `Atlas`tır. `Texture2DArray` atanırsa aynı shader array backend’ini kullanabilir; array eksikse otomatik olarak atlas veya color-only fallback’e geçilir.
+Varsayılan backend `Atlas`tır. Bu, Android cihazlarda texture-array sürücü uyumsuzluğu riskini azaltır. `Texture2DArray` atanırsa aynı shader array backend’ini kullanabilir; array eksikse otomatik olarak atlas veya color-only fallback’e geçilir.
 
 Altı temel katman bulunur: Sand, Grass, Forest, Wetland, Rock ve Mountain. Her katmanda tint, atlas slotu, metre başına döşeme ölçeği, roughness ve metallic ayarlanabilir. Kullanıcı atlas vermemişse deterministic nötr fallback atlas üretilir.
 
-Yakın LOD’lar atlas veya texture array örnekler. `detail_lod_limit` üzerindeki uzak LOD’lar yalnızca katman tint’i kullanır. Metadata yeniden üretilirken eski texture shader’dan kaldırılır.
+Yakın LOD’lar atlas veya texture array örnekler. `detail_lod_limit` üzerindeki uzak LOD’lar yalnızca katman tint’i kullanır; böylece uzakta texture fetch maliyeti kesilir.
 
 Public API:
 
 - `refresh_material_library()`
 - `get_effective_material_backend()`
 - `get_material_metadata_texture()`
-- `is_material_metadata_building()`
+- `get_material_override_texture()`
+- `flush_material_override_sync()`
 - `get_material_working_memory_bytes()`
 
-## Runtime sağlık koruması
+## Region biyom ve material paint
 
-`IslandTerrainRuntimeWatchdog`, private region veya renderer dizilerine erişmeden public metric API’leri ile Godot `Performance` monitörlerini birleştirir.
+Manuel paint, prosedürel generation metadata’sını değiştirmez. Region dosyalarında yüksek çözünürlüklü sparse override tutulur; renderer için yalnızca küçük bir RGBA8 makro texture üretilir:
 
-Ölçülen terrain verileri:
+- R: manuel biyom kimliği / 7
+- G: biyom karışım gücü
+- B: manuel material kimliği / 5
+- A: material karışım gücü
 
-- Region cache byte/count ve dirty region sayısı
-- Generation ve material geçici çalışma belleği
-- Aktif/bekleyen clipmap LOD’ları
-- Aktif/bekleyen collision patch’leri
-- Runtime quality reduction seviyesi
+```text
+Editor Input
+  → TerrainPaintSession
+  → TerrainPaintCommand
+  → TerrainMaterialPaintService
+  → TerrainRegionRepository
+  → TerrainMaterialOverrideSync
+```
 
-Godot monitor’larından FPS, process/physics süresi, static memory, video/texture memory, draw call ve node sayısı alınır. Platformun vermediği monitor değerleri sıfır olabilir; terrain-owned RAM ana karar kaynağı olarak kalır.
+Araçlar:
 
-`IslandTerrainHealthPolicy`, soft/hard/critical bellek oranlarını, düşük FPS eşiğini, ardışık kötü/iyi örnek sayılarını ve kalite değişim cooldown’ını içerir. Tek kötü örnek kaliteyi düşürmez. Auto-recovery varsayılan olarak kapalıdır.
+- Biyom boya
+- Material boya
+- Biyomu prosedürel tabana geri yükle
+- Materialı prosedürel tabana geri yükle
+- Tüm manuel paint’i geri yükle
 
-Veri kaybısız kalite basamakları:
+Kullanılmayan region’larda paint dizileri tahsis edilmez. İlk gerçek paint işleminde kimlik ve blend maskeleri açılır. 257×257 bir region için tam biyom + material override yaklaşık 264 KB kullanır ve mevcut RAM bütçesine anında eklenir.
 
-1. Full
-2. Reduced Detail: yakın material detay LOD sınırı azaltılır
-3. Reduced Shadows: terrain LOD gölgeleri kapatılır
-4. Reduced Collision: collision yarıçapı düşürülür ve fazla pooled body serbest bırakılır
+Bir stroke bütün region’ı veya dünyayı kopyalamaz. Yalnızca değişen `Rect2i` içindeki önce/sonra byte dizileri tutulur ve varsayılan stroke undo sınırı 8 MB’dir. Sınır aşılırsa son dab geri sarılır.
 
-Hard/critical baskıda yalnızca temiz region cache ve fazla pooled collision body’leri bırakılır. Kirli region, sculpt delta, generation sonucu ve kaydedilmiş terrain verisi silinmez.
-
-Public API:
-
-- `sample_health_now()`
-- `get_last_health_snapshot()`
-- `set_auto_quality_protection_enabled()`
-- `get_runtime_quality_reduction()`
-- `restore_runtime_quality()`
-
-Policy izin verirse Godot Performance paneline `IslandTerrain/*` custom monitor’ları eklenir; watchdog tree’den çıkınca kaldırılır.
+Read-only biyom/material sorguları boş region oluşturmaz. Önce cache, sonra yalnızca gerçekten mevcut kaynak/runtime region dosyaları kontrol edilir.
 
 ## Sculpt sistemi
 
@@ -117,9 +109,9 @@ Editor Input
   → MacroHeightSync
 ```
 
-Editor kodu region dizilerine doğrudan erişmez. Undo/redo bütün dünya veya bütün region kopyası saklamaz; yalnızca etkilenen `Rect2i` içindeki height ve validity değerlerini tutar. Bir stroke için varsayılan undo belleği 8 MB ile sınırlıdır.
+Undo/redo bütün dünya veya bütün region kopyası saklamaz; yalnızca etkilenen `Rect2i` içindeki height ve validity değerlerini tutar. Prosedürel ada görüntüsü immutable base height olarak korunur.
 
-Prosedürel ada görüntüsü immutable base height olarak korunur. Düzenlenmemiş region örnekleri base yüzeyden okunur. Undo bir örneği düzenlenmemiş duruma döndürdüğünde görüntü prosedürel tabana geri döner.
+Sculpt ve Paint modları karşılıklı dışlanır. Her ikisi aynı `EditorUndoRedoManager` nesne geçmişini kullanır; işlemler tek kronolojik geri-al zincirinde kalır.
 
 ## Streamed collision
 
@@ -129,42 +121,38 @@ Tüm adaya tek fizik şekli oluşturulmaz. `IslandTerrainCollisionService`, oyun
 - Örnek aralığı: 1 metre
 - Balanced aktif yarıçap: 96 metre
 - Kare başına en fazla bir patch build
+- Dairesel hedef kümesi
 - Sculpt, undo ve redo sonrası yalnızca kesişen aktif patch rebuild’i
 - Profil veya height texture değişiminde stale patch temizliği
 - Collision node’larında ölçek kullanılmaz
 
 ## Mobil profiller
 
-| Profil | Makro height | LOD | Base quads | Cache | Shadow LOD | Collision yarıçapı | CPU bütçesi |
+| Profil | Makro height/metadata | LOD | Base quads | Cache | Shadow LOD | Collision yarıçapı | CPU bütçesi |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Low | 257² | 5 | 48 | 5 | 1 | 64 m | 1 ms |
 | Balanced | 257² | 6 | 64 | 9 | 2 | 96 m | 2 ms |
 | High | 513² | 7 | 80 | 25 | 4 | 160 m | 3 ms |
 | Editor Preview | 513² | 7 | 64 | 9 | 2 | 96 m | 2 ms |
 
-Telefonlarda varsayılan profil `Balanced`, material backend `Atlas` ve runtime kalite koruması açık olmalıdır. `High` ve `Texture Array` yalnızca cihaz profiler sonucu uygunsa kullanılmalıdır. Büyük 4097² runtime heightmap oluşturulmaz.
+Telefonlarda varsayılan profil `Balanced`, material backend `Atlas` olmalıdır. `High` ve `Texture Array` yalnızca profiler sonucu uygunsa kullanılmalıdır. Büyük 4097² runtime heightmap veya paint texture oluşturulmaz.
 
 ## Kullanım
 
 1. **Project > Project Settings > Plugins** bölümünden `IslandTerrain` eklentisini etkinleştir.
 2. 3D sahneye `IslandTerrain3D` node’u ekle.
 3. Renderer ayarını `Mobile` olarak bırak.
-4. `generation_profile` ayarlarını düzenle.
-5. `material_library` içinde backend, katmanlar ve `detail_lod_limit` değerini ayarla.
-6. `health_policy` içinde FPS, RAM/VRAM ve cooldown eşiklerini ayarla.
-7. Terrain node’unu seçip sol dock’tan Sculpt Modu’nu aç.
-8. Tek parmak veya sol tık ile düzenle; ikinci parmak kamera kontrolüne ayrılır.
-9. Runtime collision için `collision_target_path` alanını oyuncuya bağla.
+4. `generation_profile` ve `material_library` ayarlarını düzenle.
+5. Terrain node’unu seç.
+6. Sol üst dock’tan Sculpt, sol alt dock’tan Paint modunu aç.
+7. Tek parmak veya sol tık ile düzenle; ikinci parmak kamera kontrolüne ayrılır.
+8. Runtime collision için `collision_target_path` alanını oyuncuya bağla.
 
 Terrain node’u taşınabilir; rotation kimlik, scale `Vector3.ONE` kalmalıdır.
 
 ## Senkronizasyon maliyeti
 
-CPU tarafında yalnızca dirty region rectangle yeniden örneklenir. Değişiklikler kare içinde birleştirilip en fazla tek makro texture upload yapılır. Runtime makro texture 257² veya 513² ile sınırlandırılmıştır. Collision rebuild işlemleri de kuyruklanır.
-
-Biyom metadata texture 257² veya 513² RGBA8’dir. Builder yalnızca geçici `resolution² × 4` byte buffer ayırır ve completion sonrasında source/result referanslarıyla buffer’ı bırakır.
-
-Sculpt sonrasında generation metadata taban yüzeyi temsil eder. Düzenleme-duyarlı lokal biyom/material paint, sonraki ayrı region-paint fazında eklenecektir.
+Height ve paint tarafında yalnızca dirty region rectangle yeniden örneklenir. Değişiklikler kare içinde birleştirilip her sistem için en fazla tek makro texture upload yapılır. Makro texture çözünürlüğü 257² veya 513² ile sınırlıdır. Collision rebuild işlemleri ayrıca kuyruklanır.
 
 ## Test
 
@@ -180,9 +168,7 @@ godot --headless --path . --script addons/island_terrain/test/generation_control
 godot --headless --path . --script addons/island_terrain/test/generation_facade_test.gd
 godot --headless --path . --script addons/island_terrain/test/material_system_test.gd
 godot --headless --path . --script addons/island_terrain/test/material_facade_test.gd
-godot --headless --path . --script addons/island_terrain/test/production_hardening_test.gd
-godot --headless --path . --script addons/island_terrain/test/long_session_stress_test.gd
-godot --headless --path . --script addons/island_terrain/test/hardening_facade_test.gd
+godot --headless --path . --script addons/island_terrain/test/material_paint_pipeline_test.gd
 ```
 
 ## Mimari sınırlar
@@ -190,10 +176,10 @@ godot --headless --path . --script addons/island_terrain/test/hardening_facade_t
 - Renderer dosya sistemine erişmez.
 - Persistence sahne node’u veya render RID’i yönetmez.
 - Tüm dünya/region dönüşümleri tek koordinat servisi üzerinden geçer.
-- EditorPlugin yalnızca orchestration yapar; stroke state ayrı session sınıfındadır.
+- EditorPlugin yalnızca orchestration yapar; stroke state ayrı session sınıflarındadır.
 - Collision servisi edit veya persistence katmanına doğrudan bağımlı değildir.
-- Generation controller yalnızca job yaşam döngüsünü ve allocation preflight’i yönetir.
+- Generation controller yalnızca job yaşam döngüsünü yönetir.
 - Material runtime shader backend’i ve metadata builder’ı izole eder.
-- Runtime watchdog karar üretir; quality controller yalnızca geri döndürülebilir servis ayarlarını uygular.
-- Smooth dışındaki araçlar full region snapshot oluşturmaz.
+- Paint servisi shader veya render RID’i yönetmez.
+- Smooth dışındaki sculpt araçları full region snapshot oluşturmaz.
 - Kazma sistemi heightfield koduna bağlanmaz; deformation interface üzerinden eklenir.

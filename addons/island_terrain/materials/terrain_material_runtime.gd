@@ -17,6 +17,7 @@ var _library: Library
 var _material_service: MaterialService
 var _metadata_builder: MetadataBuilder
 var _metadata_texture: ImageTexture
+var _override_texture: ImageTexture
 
 
 func configure(
@@ -34,8 +35,8 @@ func configure(
 	if service_error != OK:
 		return service_error
 	_ensure_builder()
-	if _metadata_texture != null:
-		_material_service.set_metadata_texture(_metadata_texture)
+	_material_service.set_metadata_texture(_metadata_texture)
+	_material_service.set_override_texture(_override_texture)
 	return OK
 
 
@@ -48,19 +49,15 @@ func rebuild_metadata(result: Result) -> Error:
 	return _metadata_builder.start(result, _budget)
 
 
+func set_override_texture(texture: ImageTexture) -> void:
+	_override_texture = texture
+	if _material_service != null:
+		_material_service.set_override_texture(texture)
+
+
 func cancel() -> void:
 	if _metadata_builder != null:
 		_metadata_builder.cancel()
-
-
-func set_runtime_detail_lod_limit(value: int) -> void:
-	if _material_service != null:
-		_material_service.set_runtime_detail_lod_limit(value)
-
-
-func get_runtime_detail_lod_limit() -> int:
-	return _material_service.get_runtime_detail_lod_limit() \
-		if _material_service != null else 0
 
 
 func is_building_metadata() -> bool:
@@ -74,6 +71,10 @@ func effective_backend() -> int:
 
 func metadata_texture() -> ImageTexture:
 	return _metadata_texture
+
+
+func override_texture() -> ImageTexture:
+	return _override_texture
 
 
 func estimated_working_memory_bytes() -> int:

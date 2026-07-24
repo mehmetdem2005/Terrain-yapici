@@ -150,8 +150,11 @@ func _load_validated_region(path: String, coord: Vector2i) -> RegionData:
 	if loaded.checksum != 0:
 		var current_checksum: int = _calculate_checksum(loaded)
 		if loaded.checksum != current_checksum:
+			var v2_checksum: int = _calculate_v2_checksum(loaded)
 			var legacy_checksum: int = _calculate_legacy_height_checksum(loaded.height_data)
-			if loaded.height_valid_mask.is_empty() \
+			if loaded.checksum == v2_checksum:
+				loaded.checksum = current_checksum
+			elif loaded.height_valid_mask.is_empty() \
 				and not loaded.height_is_dense \
 				and loaded.checksum == legacy_checksum:
 				loaded.height_is_dense = true
@@ -329,6 +332,24 @@ func _remove_if_exists(path: String) -> void:
 
 
 func _calculate_checksum(region: RegionData) -> int:
+	return int(hash([
+		region.height_data,
+		region.height_valid_mask,
+		region.height_is_dense,
+		region.material_index_data,
+		region.material_valid_mask,
+		region.material_weight_data,
+		region.biome_data,
+		region.biome_valid_mask,
+		region.color_tint_data,
+		region.wetness_data,
+		region.hole_mask,
+		region.foliage_mask,
+		region.runtime_delta_data,
+	])) & 0x7fffffff
+
+
+func _calculate_v2_checksum(region: RegionData) -> int:
 	return int(hash([
 		region.height_data,
 		region.height_valid_mask,

@@ -18,10 +18,10 @@ const GenerationController = preload("res://addons/island_terrain/generation/ter
 const GenerationResult = preload("res://addons/island_terrain/generation/terrain_generation_result.gd")
 const MaterialLibrary = preload("res://addons/island_terrain/materials/terrain_material_library.gd")
 const MaterialRuntime = preload("res://addons/island_terrain/materials/terrain_material_runtime.gd")
-const HealthPolicy = preload("res://addons/island_terrain/diagnostics/terrain_health_policy.gd")
-const HealthSnapshot = preload("res://addons/island_terrain/diagnostics/terrain_health_snapshot.gd")
-const RuntimeWatchdog = preload("res://addons/island_terrain/diagnostics/terrain_runtime_watchdog.gd")
-const RuntimeQualityController = preload("res://addons/island_terrain/diagnostics/terrain_runtime_quality_controller.gd")
+const MaterialOverrideSync = preload("res://addons/island_terrain/rendering/terrain_material_override_sync.gd")
+const PaintCommand = preload("res://addons/island_terrain/application/terrain_paint_command.gd")
+const PaintTransaction = preload("res://addons/island_terrain/application/terrain_paint_transaction.gd")
+const PaintService = preload("res://addons/island_terrain/application/terrain_material_paint_service.gd")
 const TERRAIN_SHADER = preload("res://addons/island_terrain/rendering/shaders/island_terrain.gdshader")
 
 signal terrain_initialized
@@ -32,10 +32,8 @@ signal preview_generation_failed(message: String)
 signal material_metadata_progress(progress: float)
 signal material_metadata_completed(texture: ImageTexture)
 signal material_metadata_failed(message: String)
-signal health_snapshot_updated(snapshot: HealthSnapshot)
-signal terrain_pressure_changed(level: int, reasons: PackedStringArray)
-signal runtime_quality_changed(level: int)
 signal terrain_edited(transaction: EditTransaction)
+signal terrain_painted(transaction: PaintTransaction)
 
 @export_category("Terrain Data")
 @export var manifest: ManifestResource
@@ -55,9 +53,6 @@ signal terrain_edited(transaction: EditTransaction)
 @export_enum("Low", "Balanced", "High", "Editor Preview") var device_profile: int = 1:
 	set = _set_device_profile
 @export var memory_budget: MemoryBudget
-@export var health_policy: HealthPolicy
-@export var auto_quality_protection_enabled: bool = true:
-	set = _set_auto_quality_protection_enabled
 @export_range(0, 4, 1) var runtime_shutdown_flush_limit: int = 2
 
 @export_category("Streamed Collision")
@@ -82,9 +77,9 @@ var _macro_sync: MacroHeightSync
 var _collision_service: CollisionService
 var _generation_controller: GenerationController
 var _material_runtime: MaterialRuntime
-var _runtime_watchdog: RuntimeWatchdog
-var _runtime_quality_controller: RuntimeQualityController
+var _material_override_sync: MaterialOverrideSync
 var _edit_service: EditService
+var _paint_service: PaintService
 var _terrain_material: ShaderMaterial
 var _height_texture: ImageTexture
 var _macro_height_image: Image
@@ -187,37 +182,24 @@ func get_material_metadata_texture() -> ImageTexture:
 
 
 func get_material_working_memory_bytes() -> int:
-	return _material_runtime.estimated_working_memory_bytes() if _material_runtime != null else 0
+	var metadata_bytes: int = _material_runtime.estimated_working_memory_bytes() if _material_runtime != null else 0
+	var override_bytes: int = _material_override_sync.estimated_memory_bytes() if _material_override_sync != null else 0
+	return metadata_bytes + override_bytes
+
+
+func get_material_override_texture() -> ImageTexture:
+	return _material_override_sync.texture() if _material_override_sync != null else null
+
+
+func flush_material_override_sync() -> Error:
+	return _material_override_sync.flush_all() if _material_override_sync != null else ERR_UNCONFIGURED
 
 
 func refresh_material_library() -> Error:
 	if _material_runtime == null or _terrain_material == null or memory_budget == null:
 		return ERR_UNCONFIGURED
 	_ensure_material_library()
-	var error: Error = _material_runtime.configure(_terrain_material, material_library, memory_budget)
-	if error == OK and _runtime_quality_controller != null:
-		_runtime_quality_controller.refresh_baseline_from_services()
-	return error
-
-
-func get_last_health_snapshot() -> HealthSnapshot:
-	return _runtime_watchdog.get_last_snapshot() if _runtime_watchdog != null else null
-
-
-func sample_health_now() -> HealthSnapshot:
-	return _runtime_watchdog.sample_now() if _runtime_watchdog != null else null
-
-
-func set_auto_quality_protection_enabled(value: bool) -> void:
-	auto_quality_protection_enabled = value
-
-
-func get_runtime_quality_reduction() -> int:
-	return _runtime_quality_controller.current_level() 		if _runtime_quality_controller != null else 0
-
-
-func restore_runtime_quality() -> Error:
-	return _runtime_quality_controller.restore_full_quality() 		if _runtime_quality_controller != null else ERR_UNCONFIGURED
+	return _material_runtime.configure(_terrain_material, material_library, memory_budget)
 
 
 func request_preview_rebuild() -> void:
@@ -311,6 +293,52 @@ func apply_edit_transaction_after(transaction: EditTransaction) -> Error:
 	return error
 
 
+func apply_paint_command(command: PaintCommand) -> PaintTransaction:
+	if _paint_service == null:
+		push_error("IT-043: Terrain paint service is not initialized")
+		return null
+	var transaction: PaintTransaction = _paint_service.apply_paint(command)
+	if transaction != null and not transaction.is_empty():
+		terrain_painted.emit(transaction)
+	return transaction
+
+
+func apply_paint_transaction_before(transaction: PaintTransaction) -> Error:
+	return _paint_service.apply_transaction_before(transaction) if _paint_service != null else ERR_UNCONFIGURED
+
+
+func apply_paint_transaction_after(transaction: PaintTransaction) -> Error:
+	return _paint_service.apply_transaction_after(transaction) if _paint_service != null else ERR_UNCONFIGURED
+
+
+func get_biome_override_at_world(world_position: Vector3) -> Dictionary:
+	if _coordinate_system == null or _region_repository == null:
+		return {}
+	var coord: Vector2i = _coordinate_system.world_to_region_clamped(world_position)
+	var region: RegionData = _get_existing_paint_region(coord)
+	if region == null:
+		return {}
+	var pixel: Vector2i = _coordinate_system.world_to_region_pixel(world_position, coord)
+	return {
+		"id": region.biome_override_id(pixel),
+		"strength": float(region.biome_override_strength(pixel)) / 255.0,
+	}
+
+
+func get_material_override_at_world(world_position: Vector3) -> Dictionary:
+	if _coordinate_system == null or _region_repository == null:
+		return {}
+	var coord: Vector2i = _coordinate_system.world_to_region_clamped(world_position)
+	var region: RegionData = _get_existing_paint_region(coord)
+	if region == null:
+		return {}
+	var pixel: Vector2i = _coordinate_system.world_to_region_pixel(world_position, coord)
+	return {
+		"id": region.material_override_id(pixel),
+		"strength": float(region.material_override_strength(pixel)) / 255.0,
+	}
+
+
 func set_collision_tracking_target(target: Node3D) -> void:
 	if _collision_service != null:
 		_collision_service.set_tracking_target(target)
@@ -365,6 +393,9 @@ func get_normal_at_world(world_position: Vector3, sample_distance_m: float = 1.0
 
 
 func get_biome_at_world(world_position: Vector3) -> int:
+	var override_data: Dictionary = get_biome_override_at_world(world_position)
+	if float(override_data.get("strength", 0.0)) > 0.0:
+		return int(override_data.get("id", GenerationResult.Biome.OCEAN))
 	var index: int = _generation_index_at_world(world_position)
 	return int(_generation_result.biome_data[index]) \
 		if index >= 0 else GenerationResult.Biome.OCEAN
@@ -439,7 +470,6 @@ func _initialize_terrain() -> void:
 	_ensure_memory_budget()
 	_ensure_generation_profile()
 	_ensure_material_library()
-	_ensure_health_policy()
 	var errors: PackedStringArray = manifest.validate()
 	if not errors.is_empty():
 		push_error("IT-001: Manifest validation failed: %s" % "; ".join(errors))
@@ -463,13 +493,18 @@ func _initialize_terrain() -> void:
 		_macro_sync,
 		base_sampler
 	)
+	_paint_service = PaintService.new(
+		manifest,
+		_coordinate_system,
+		_region_repository,
+		_material_override_sync
+	)
 	_initialized = true
 	set_process(true)
 	if generate_preview_on_ready:
 		_schedule_preview_generation()
 	else:
 		_configure_collision_service()
-		_configure_runtime_protection()
 	terrain_initialized.emit()
 
 
@@ -528,12 +563,7 @@ func _create_internal_services(base_sampler: Callable) -> bool:
 		_generation_controller.name = "__TerrainGeneration"
 		add_child(_generation_controller, false, Node.INTERNAL_MODE_BACK)
 	_connect_generation_signals()
-	_generation_controller.configure(
-		manifest,
-		memory_budget,
-		generation_profile,
-		Callable(self, "_metric_resident_memory_bytes")
-	)
+	_generation_controller.configure(manifest, memory_budget, generation_profile)
 
 	var material_node: Node = get_node_or_null("__TerrainMaterialRuntime")
 	if material_node != null:
@@ -562,10 +592,30 @@ func _create_internal_services(base_sampler: Callable) -> bool:
 	if material_error != OK:
 		push_error("IT-035: Terrain material runtime configuration failed: %d" % material_error)
 		return false
-	var protection_error: Error = _configure_runtime_protection()
-	if protection_error != OK:
-		push_error("IT-037: Runtime protection configuration failed: %d" % protection_error)
+
+	var override_node: Node = get_node_or_null("__TerrainMaterialOverrideSync")
+	if override_node != null:
+		_material_override_sync = override_node as MaterialOverrideSync
+		if _material_override_sync == null:
+			push_error("IT-044: Reserved child name __TerrainMaterialOverrideSync is occupied")
+			return false
+	else:
+		_material_override_sync = MaterialOverrideSync.new()
+		_material_override_sync.name = "__TerrainMaterialOverrideSync"
+		add_child(_material_override_sync, false, Node.INTERNAL_MODE_BACK)
+	var override_callback := Callable(self, "_on_material_override_texture_changed")
+	if not _material_override_sync.override_texture_changed.is_connected(override_callback):
+		_material_override_sync.override_texture_changed.connect(override_callback)
+	var override_error: Error = _material_override_sync.configure(
+		manifest,
+		_coordinate_system,
+		_region_repository,
+		memory_budget
+	)
+	if override_error != OK:
+		push_error("IT-045: Terrain material override sync failed: %d" % override_error)
 		return false
+	_material_runtime.set_override_texture(_material_override_sync.texture())
 	return true
 
 
@@ -621,12 +671,6 @@ func _ensure_material_library() -> void:
 	material_library.sanitize()
 
 
-func _ensure_health_policy() -> void:
-	if health_policy == null:
-		health_policy = HealthPolicy.new()
-	health_policy.sanitize()
-
-
 func _create_flat_height_texture() -> ImageTexture:
 	var image := Image.create_empty(3, 3, true, Image.FORMAT_RF)
 	image.fill(Color(0.0, 0.0, 0.0, 1.0))
@@ -642,12 +686,7 @@ func _schedule_preview_generation() -> void:
 		return
 	_ensure_memory_budget()
 	_ensure_generation_profile()
-	_generation_controller.configure(
-		manifest,
-		memory_budget,
-		generation_profile,
-		Callable(self, "_metric_resident_memory_bytes")
-	)
+	_generation_controller.configure(manifest, memory_budget, generation_profile)
 	var error: Error = _generation_controller.start(memory_budget.macro_height_resolution)
 	if error != OK:
 		var message := "Generation start failed with error %d" % error
@@ -683,7 +722,6 @@ func _on_generation_completed(result: GenerationResult) -> void:
 		if material_error != OK:
 			_on_material_metadata_failed("Metadata build start failed with error %d" % material_error)
 	_configure_collision_service()
-	_configure_runtime_protection()
 	preview_generation_progress.emit(1.0)
 	preview_generation_stage_changed.emit("Complete")
 	preview_generation_completed.emit()
@@ -711,68 +749,9 @@ func _on_material_metadata_failed(message: String) -> void:
 	material_metadata_failed.emit(message)
 
 
-func _on_health_snapshot_updated(snapshot: HealthSnapshot) -> void:
-	health_snapshot_updated.emit(snapshot)
-
-
-func _on_terrain_pressure_changed(level: int, reasons: PackedStringArray) -> void:
-	terrain_pressure_changed.emit(level, reasons)
-
-
-func _on_runtime_quality_changed(level: int) -> void:
-	runtime_quality_changed.emit(level)
-
-
-func _configure_runtime_protection() -> Error:
-	if _clipmap == null or _collision_service == null or _material_runtime == null:
-		return ERR_UNCONFIGURED
-	_ensure_health_policy()
-	if _runtime_quality_controller == null:
-		_runtime_quality_controller = RuntimeQualityController.new()
-	var quality_error: Error = _runtime_quality_controller.configure(
-		_clipmap,
-		_collision_service,
-		_material_runtime
-	)
-	if quality_error != OK:
-		return quality_error
-	var watchdog_node: Node = get_node_or_null("__TerrainRuntimeWatchdog")
-	if watchdog_node != null:
-		_runtime_watchdog = watchdog_node as RuntimeWatchdog
-		if _runtime_watchdog == null:
-			return ERR_INVALID_DATA
-	else:
-		_runtime_watchdog = RuntimeWatchdog.new()
-		_runtime_watchdog.name = "__TerrainRuntimeWatchdog"
-		add_child(_runtime_watchdog, false, Node.INTERNAL_MODE_BACK)
-	var snapshot_callback := Callable(self, "_on_health_snapshot_updated")
-	var pressure_callback := Callable(self, "_on_terrain_pressure_changed")
-	var quality_callback := Callable(self, "_on_runtime_quality_changed")
-	if not _runtime_watchdog.snapshot_updated.is_connected(snapshot_callback):
-		_runtime_watchdog.snapshot_updated.connect(snapshot_callback)
-	if not _runtime_watchdog.pressure_changed.is_connected(pressure_callback):
-		_runtime_watchdog.pressure_changed.connect(pressure_callback)
-	if not _runtime_watchdog.runtime_quality_changed.is_connected(quality_callback):
-		_runtime_watchdog.runtime_quality_changed.connect(quality_callback)
-	var watchdog_error: Error = _runtime_watchdog.configure(
-		health_policy,
-		memory_budget,
-		_runtime_quality_controller,
-		Callable(self, "_metric_region_cache_bytes"),
-		Callable(self, "_metric_cached_region_count"),
-		Callable(self, "_metric_dirty_region_count"),
-		Callable(self, "get_generation_working_memory_bytes"),
-		Callable(self, "get_material_working_memory_bytes"),
-		Callable(self, "_metric_active_clipmap_levels"),
-		Callable(self, "_metric_pending_clipmap_levels"),
-		Callable(self, "get_active_collision_patch_count"),
-		Callable(self, "_metric_pending_collision_builds"),
-		Callable(self, "_release_reclaimable_memory")
-	)
-	_runtime_watchdog.set_auto_protection_enabled(
-		auto_quality_protection_enabled and not Engine.is_editor_hint()
-	)
-	return watchdog_error
+func _on_material_override_texture_changed(texture: ImageTexture) -> void:
+	if _material_runtime != null:
+		_material_runtime.set_override_texture(texture)
 
 
 func _configure_collision_service() -> void:
@@ -801,39 +780,19 @@ func _queue_collision_transaction(transaction: EditTransaction) -> void:
 		_collision_service.queue_transaction(transaction)
 
 
-func _metric_region_cache_bytes() -> int:
-	return _region_repository.cached_memory_bytes() if _region_repository != null else 0
-
-
-func _metric_cached_region_count() -> int:
-	return _region_repository.cached_region_count() if _region_repository != null else 0
-
-
-func _metric_dirty_region_count() -> int:
-	return _region_repository.dirty_region_count() if _region_repository != null else 0
-
-
-func _metric_active_clipmap_levels() -> int:
-	return _clipmap.active_level_count() if _clipmap != null else 0
-
-
-func _metric_pending_clipmap_levels() -> int:
-	return _clipmap.pending_level_count() if _clipmap != null else 0
-
-
-func _metric_pending_collision_builds() -> int:
-	return _collision_service.pending_build_count() if _collision_service != null else 0
-
-
-func _metric_resident_memory_bytes() -> int:
-	return _metric_region_cache_bytes() + get_material_working_memory_bytes()
-
-
-func _release_reclaimable_memory() -> void:
-	if _region_repository != null:
-		_region_repository.clear_clean_cache()
-	if _collision_service != null:
-		_collision_service.trim_pool(4)
+func _get_existing_paint_region(coord: Vector2i) -> RegionData:
+	var cached: RegionData = _region_repository.get_cached(coord)
+	if cached != null:
+		return cached
+	var writable_exists: bool = ResourceLoader.exists(
+		_region_repository.writable_region_file_path(coord)
+	)
+	var source_exists: bool = ResourceLoader.exists(
+		_region_repository.source_region_file_path(coord)
+	)
+	if not writable_exists and not source_exists:
+		return null
+	return _region_repository.get_or_create(coord)
 
 
 func _world_to_image_pixel(world_position: Vector3, image: Image) -> Vector2i:
@@ -885,25 +844,19 @@ func _set_device_profile(value: int) -> void:
 			Callable(self, "get_base_height_sample_at_world")
 		)
 		if _generation_controller != null:
-			_generation_controller.configure(
-				manifest,
-				memory_budget,
-				generation_profile,
-				Callable(self, "_metric_resident_memory_bytes")
-			)
+			_generation_controller.configure(manifest, memory_budget, generation_profile)
 		if _material_runtime != null:
 			_material_runtime.configure(_terrain_material, material_library, memory_budget)
+		if _material_override_sync != null:
+			_material_override_sync.configure(
+				manifest,
+				_coordinate_system,
+				_region_repository,
+				memory_budget
+			)
+			_material_runtime.set_override_texture(_material_override_sync.texture())
 		_configure_collision_service()
-		_configure_runtime_protection()
 		request_preview_rebuild()
-
-
-func _set_auto_quality_protection_enabled(value: bool) -> void:
-	auto_quality_protection_enabled = value
-	if _runtime_watchdog != null:
-		_runtime_watchdog.set_auto_protection_enabled(
-			auto_quality_protection_enabled and not Engine.is_editor_hint()
-		)
 
 
 func _set_collision_enabled(value: bool) -> void:

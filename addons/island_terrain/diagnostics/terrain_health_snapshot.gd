@@ -23,6 +23,8 @@ var cached_region_count: int = 0
 var dirty_region_count: int = 0
 var generation_working_bytes: int = 0
 var material_working_bytes: int = 0
+var active_clipmap_levels: int = 0
+var pending_clipmap_levels: int = 0
 var active_collision_patches: int = 0
 var pending_collision_builds: int = 0
 var runtime_quality_level: int = 0
@@ -54,6 +56,8 @@ func duplicate_snapshot() -> IslandTerrainHealthSnapshot:
 	copy.dirty_region_count = dirty_region_count
 	copy.generation_working_bytes = generation_working_bytes
 	copy.material_working_bytes = material_working_bytes
+	copy.active_clipmap_levels = active_clipmap_levels
+	copy.pending_clipmap_levels = pending_clipmap_levels
 	copy.active_collision_patches = active_collision_patches
 	copy.pending_collision_builds = pending_collision_builds
 	copy.runtime_quality_level = runtime_quality_level
@@ -78,6 +82,8 @@ func to_dictionary() -> Dictionary:
 		"dirty_region_count": dirty_region_count,
 		"generation_working_bytes": generation_working_bytes,
 		"material_working_bytes": material_working_bytes,
+		"active_clipmap_levels": active_clipmap_levels,
+		"pending_clipmap_levels": pending_clipmap_levels,
 		"active_collision_patches": active_collision_patches,
 		"pending_collision_builds": pending_collision_builds,
 		"runtime_quality_level": runtime_quality_level,

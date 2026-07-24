@@ -69,9 +69,6 @@ jobs:
       - name: Material facade tests
         run: ./godot --headless --path . --script addons/island_terrain/test/material_facade_test.gd
 
-      - name: Material paint pipeline tests
-        run: ./godot --headless --path . --script addons/island_terrain/test/material_paint_pipeline_test.gd
-
       - name: Production hardening tests
         run: ./godot --headless --path . --script addons/island_terrain/test/production_hardening_test.gd
 

@@ -10,6 +10,7 @@ var _shader_material: ShaderMaterial
 var _library: Library
 var _generated_atlas: ImageTexture
 var _metadata_texture: Texture2D
+var _override_texture: Texture2D
 var _effective_backend: int = Library.Backend.COLOR_ONLY
 var _runtime_detail_lod_limit: int = 0
 
@@ -31,6 +32,13 @@ func set_metadata_texture(texture: Texture2D) -> void:
 	if _shader_material != null:
 		_shader_material.set_shader_parameter(&"terrain_metadata_texture", texture)
 		_shader_material.set_shader_parameter(&"has_metadata_texture", texture != null)
+
+
+func set_override_texture(texture: Texture2D) -> void:
+	_override_texture = texture
+	if _shader_material != null:
+		_shader_material.set_shader_parameter(&"terrain_override_texture", texture)
+		_shader_material.set_shader_parameter(&"has_override_texture", texture != null)
 
 
 func set_runtime_detail_lod_limit(value: int) -> void:
@@ -100,6 +108,7 @@ func _apply_parameters() -> void:
 		_library.albedo_array != null
 	)
 	set_metadata_texture(_metadata_texture)
+	set_override_texture(_override_texture)
 	_apply_layer(&"sand", _library.sand)
 	_apply_layer(&"grass", _library.grass)
 	_apply_layer(&"forest", _library.forest)

@@ -56,3 +56,6 @@ jobs:
 
       - name: Generation graph tests
         run: ./godot --headless --path . --script addons/island_terrain/test/generation_graph_test.gd
+
+      - name: Generation controller tests
+        run: ./godot --headless --path . --script addons/island_terrain/test/generation_controller_test.gd

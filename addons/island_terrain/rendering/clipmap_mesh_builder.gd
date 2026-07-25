@@ -3,7 +3,7 @@ extends RefCounted
 class_name IslandTerrainClipmapMeshBuilder
 
 
-static func build_level(base_quads: int, level: int) -> ArrayMesh:
+static func build_level(base_quads: int, level: int, add_outer_skirt: bool = false) -> ArrayMesh:
 	var quads: int = maxi(4, base_quads)
 	var spacing: float = float(1 << level)
 	var half: float = float(quads) * 0.5
@@ -35,7 +35,10 @@ static func build_level(base_quads: int, level: int) -> ArrayMesh:
 			var c: int = a + quads + 1
 			var d: int = c + 1
 			indices.append_array(PackedInt32Array([a, c, b, b, c, d]))
-	_append_outer_skirts(vertices, normals, uvs, colors, indices, quads, spacing, half)
+	# Only the outermost clipmap level may own a vertical skirt. Adding a skirt
+	# to every ring creates the large green walls seen in the mobile editor.
+	if add_outer_skirt:
+		_append_outer_skirts(vertices, normals, uvs, colors, indices, quads, spacing, half)
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices

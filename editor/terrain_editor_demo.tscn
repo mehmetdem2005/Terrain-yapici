@@ -1,0 +1,24 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://addons/island_terrain/editor/island_terrain_authoring_3d.gd" id="1_terrain"]
+
+[sub_resource type="Environment" id="Environment_editor"]
+background_mode = 1
+background_color = Color(0.55, 0.76, 0.92, 1)
+ambient_light_source = 3
+ambient_light_color = Color(0.68, 0.76, 0.84, 1)
+ambient_light_energy = 0.8
+
+[node name="IslandTerrain3D" type="Node3D"]
+script = ExtResource("1_terrain")
+device_profile = 3
+collision_enabled = false
+generate_preview_on_ready = false
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-58, -32, 0)
+light_energy = 1.15
+shadow_enabled = false
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_editor")

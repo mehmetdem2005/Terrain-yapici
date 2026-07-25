@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - agent/testable-demo-package
+      - agent/aaa-authoring-tools
   pull_request:
     branches:
       - main
@@ -52,11 +53,14 @@ jobs:
       - name: Validate editor terrain and sculpt
         run: ./godot --headless --path . --script demo/editor_tools_smoke_test.gd
 
+      - name: Validate AAA authoring tools
+        run: ./godot --headless --path . --script demo/aaa_authoring_tools_test.gd
+
       - name: Create project ZIP
         run: |
           rm -rf package
-          mkdir -p package/IslandTerrain-Test-Projesi
-          rsync -a ./ package/IslandTerrain-Test-Projesi/ \
+          mkdir -p package/IslandTerrain-AAA-Authoring
+          rsync -a ./ package/IslandTerrain-AAA-Authoring/ \
             --exclude '.git' \
             --exclude '.github' \
             --exclude '.godot' \
@@ -64,12 +68,12 @@ jobs:
             --exclude 'godot' \
             --exclude 'godot.zip'
           cd package
-          zip -qr ../IslandTerrain-Test-Projesi-Godot-4.6.3.zip IslandTerrain-Test-Projesi
+          zip -qr ../IslandTerrain-AAA-Authoring-Godot-4.6.3.zip IslandTerrain-AAA-Authoring
 
       - name: Upload test package
         uses: actions/upload-artifact@v4
         with:
-          name: IslandTerrain-Test-Projesi
-          path: IslandTerrain-Test-Projesi-Godot-4.6.3.zip
+          name: IslandTerrain-AAA-Authoring
+          path: IslandTerrain-AAA-Authoring-Godot-4.6.3.zip
           if-no-files-found: error
           retention-days: 7

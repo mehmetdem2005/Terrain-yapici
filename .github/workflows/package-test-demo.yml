@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - agent/testable-demo-package
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "demo/**"
+      - "project.godot"
+      - ".github/workflows/package-test-demo.yml"
   workflow_dispatch:
 
 permissions:

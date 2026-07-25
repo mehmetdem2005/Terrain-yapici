@@ -20,7 +20,7 @@ Sağ üstteki **Çalıştır** düğmesine bas. Runtime demo açılır.
 - `Sıfırla`: başlangıç kamera açısına döner.
 - `Clipmap Testi`: gerçek terrain renderer'ını ayrı olarak sınar.
 
-## Terrain şekillendirme araçlarını açma
+## Map hazırlama sahnesini açma
 
 Araçlar oyun çalışırken görünmez; Godot'un **editör ekranında** kullanılır.
 
@@ -28,9 +28,19 @@ Araçlar oyun çalışırken görünmez; Godot'un **editör ekranında** kullan�
 2. Alttaki **Dosya Sistemi / FileSystem** bölümünden `editor/terrain_editor_demo.tscn` sahnesini aç.
 3. Sol sahne ağacında en üstteki **IslandTerrain3D** node'una dokunup seç.
 4. Editörün alt çubuğunda **IslandTerrain** düğmesi otomatik açılır. Görünmüyorsa alt çubuğu yatay kaydır.
-5. Panelde iki sekme vardır:
-   - **Şekillendir**: arazi yüksekliğini değiştirir.
-   - **Boya**: biyom ve zemin malzemesi override'ı uygular.
+5. Yeni editör terrain'i otomatik ada üretmez; deniz seviyesinde düz bir map olarak açılır.
+
+Panelde üç sekme vardır:
+
+- **Harita**: düz başlangıç durumunu gösterir ve istersen prosedürel ada üretir.
+- **Şekillendir**: arazi yüksekliğini değiştirir.
+- **Boya**: biyom ve zemin malzemesi override'ı uygular.
+
+## Harita sekmesi
+
+Elle map hazırlayacaksan doğrudan **Şekillendir** sekmesine geç. Prosedürel bir başlangıç istiyorsan **Prosedürel Ada Üret** düğmesine bas.
+
+Oyuncunun oyun sırasında zemini kazması bu panelin parçası değildir. O özellik daha sonra oyun runtime'ına bağlanacak ayrı kazma/deformation sistemidir.
 
 ## Şekillendir sekmesi
 

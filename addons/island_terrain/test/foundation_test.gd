@@ -7,6 +7,7 @@ const RegionData = preload("res://addons/island_terrain/core/terrain_region_data
 const MemoryBudget = preload("res://addons/island_terrain/core/terrain_memory_budget.gd")
 const RegionRepository = preload("res://addons/island_terrain/infrastructure/terrain_region_repository.gd")
 const MeshBuilder = preload("res://addons/island_terrain/rendering/clipmap_mesh_builder.gd")
+const ClipmapController = preload("res://addons/island_terrain/rendering/clipmap_controller.gd")
 
 var _failures := PackedStringArray()
 
@@ -87,16 +88,24 @@ func _test_memory_profiles() -> void:
 
 
 func _test_clipmap_mesh() -> void:
-	var centre: ArrayMesh = MeshBuilder.build_level(32, 0)
-	var ring: ArrayMesh = MeshBuilder.build_level(32, 1)
+	var quads: int = 32
+	var base_vertex_count: int = (quads + 1) * (quads + 1)
+	var centre: ArrayMesh = MeshBuilder.build_level(quads, 0, false)
+	var ring: ArrayMesh = MeshBuilder.build_level(quads, 1, false)
+	var outer_ring: ArrayMesh = MeshBuilder.build_level(quads, 2, true)
 	_check(centre.get_surface_count() == 1, "centre clipmap mesh surface missing")
 	_check(ring.get_surface_count() == 1, "ring clipmap mesh surface missing")
-	_check(centre.surface_get_array_len(0) > 0, "centre clipmap mesh has no vertices")
+	_check(outer_ring.get_surface_count() == 1, "outer clipmap mesh surface missing")
+	_check(centre.surface_get_array_len(0) == base_vertex_count, "centre clipmap must not contain skirt walls")
+	_check(ring.surface_get_array_len(0) == base_vertex_count, "inner LOD ring must not contain skirt walls")
+	_check(outer_ring.surface_get_array_len(0) > base_vertex_count, "outermost LOD must retain the world-edge skirt")
 	_check(ring.surface_get_array_index_len(0) > 0, "ring clipmap mesh has no indices")
 	_check(
 		ring.surface_get_array_index_len(0) < centre.surface_get_array_index_len(0),
 		"LOD ring must remove its centre indices"
 	)
+	var snap: Vector3 = ClipmapController.compute_shared_snap(Vector3(37.0, 12.0, 47.0), 6)
+	_check(snap.is_equal_approx(Vector3(32.0, 0.0, 32.0)), "clipmap levels were not aligned to the coarsest grid")
 
 
 func _test_region_copy_on_write_roundtrip() -> void:

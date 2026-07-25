@@ -163,6 +163,7 @@ func _build_and_apply_delta(
 					source_valid,
 					region.sample_count,
 					pixel,
+					world_pos,
 					old_height,
 					weight
 				)
@@ -195,6 +196,7 @@ func _evaluate_height(
 	source_valid: PackedByteArray,
 	sample_count: int,
 	pixel: Vector2i,
+	world_position: Vector3,
 	old_height: float,
 	weight: float
 ) -> float:
@@ -208,7 +210,25 @@ func _evaluate_height(
 		SculptCommand.Tool.SMOOTH:
 			var average: float = _neighbor_average(coord, source, source_valid, sample_count, pixel)
 			return lerpf(old_height, average, clampf(command.strength * weight, 0.0, 1.0))
+		SculptCommand.Tool.NOISE:
+			var signed_noise: float = _sample_editor_noise(world_position, command.noise_scale_m, command.random_seed)
+			return old_height + signed_noise * command.strength * weight
+		SculptCommand.Tool.TERRACE:
+			var safe_step: float = maxf(0.25, command.terrace_step_m)
+			var terraced_height: float = roundf(old_height / safe_step) * safe_step
+			return lerpf(old_height, terraced_height, clampf(command.strength * weight, 0.0, 1.0))
 	return old_height
+
+
+func _sample_editor_noise(world_position: Vector3, scale_m: float, seed: int) -> float:
+	var safe_scale: float = maxf(0.5, scale_m)
+	var x: float = world_position.x / safe_scale
+	var z: float = world_position.z / safe_scale
+	var seed_phase: float = float(seed) * 0.17320508
+	var octave_a: float = sin(x * 1.71 + seed_phase) * cos(z * 1.37 - seed_phase * 0.41)
+	var octave_b: float = sin((x + z) * 3.11 + seed_phase * 1.83) * 0.38
+	var octave_c: float = cos((x - z) * 6.07 - seed_phase * 0.77) * 0.16
+	return clampf((octave_a + octave_b + octave_c) / 1.54, -1.0, 1.0)
 
 
 func _neighbor_average(

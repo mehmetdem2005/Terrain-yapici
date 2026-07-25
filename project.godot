@@ -1,12 +1,21 @@
 ; Engine configuration file.
-; Minimal validation project for Terrain-yapici / IslandTerrain.
+; Testable IslandTerrain 0.5 project for Godot 4.6.3 Mobile Renderer.
 
 config_version=5
 
 [application]
 
-config/name="Terrain-yapici"
+config/name="IslandTerrain Telefon Testi"
+run/main_scene="res://demo/demo_main.tscn"
 config/features=PackedStringArray("4.6", "Mobile")
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/size/window_width_override=1280
+window/size/window_height_override=720
+window/stretch/mode="canvas_items"
 
 [editor_plugins]
 

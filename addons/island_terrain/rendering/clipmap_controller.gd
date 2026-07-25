@@ -116,7 +116,8 @@ func _build_within_frame_budget() -> void:
 func _build_level(level: int) -> void:
 	var instance := MeshInstance3D.new()
 	instance.name = "ClipmapLOD%d" % level
-	instance.mesh = MeshBuilder.build_level(_budget.base_quads, level)
+	var is_outermost: bool = level == _budget.clipmap_levels - 1
+	instance.mesh = MeshBuilder.build_level(_budget.base_quads, level, is_outermost)
 	instance.cast_shadow = (
 		GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 		if level < _budget.shadow_lod_count
@@ -128,7 +129,7 @@ func _build_level(level: int) -> void:
 	instance.set_instance_shader_parameter(&"lod_level", float(level))
 	instance.set_instance_shader_parameter(
 		&"skirt_depth_m",
-		maxf(4.0, float(1 << level) * 2.0)
+		maxf(4.0, float(1 << level) * 2.0) if is_outermost else 0.0
 	)
 	instance.position = _last_shared_snap_position \
 		if _last_shared_snap_position.x < 1.0e20 \
@@ -162,16 +163,29 @@ func _update_camera_snapping() -> void:
 	var camera: Camera3D = _camera
 	if not is_instance_valid(camera):
 		camera = get_viewport().get_camera_3d()
-	if not is_instance_valid(camera):
+	if not is_instance_valid(camera) or _budget == null:
 		return
 	var camera_local: Vector3 = to_local(camera.global_position)
-	var shared_snap := Vector3(floorf(camera_local.x), 0.0, floorf(camera_local.z))
+	var shared_snap: Vector3 = compute_shared_snap(camera_local, _budget.clipmap_levels)
 	if shared_snap.is_equal_approx(_last_shared_snap_position):
 		return
 	_last_shared_snap_position = shared_snap
 	for instance in _level_instances:
 		if is_instance_valid(instance):
 			instance.position = shared_snap
+
+
+static func compute_shared_snap(camera_local: Vector3, clipmap_levels: int) -> Vector3:
+	# Every ring must share a centre aligned to the coarsest grid. Snapping all
+	# levels to arbitrary one-metre coordinates misaligns coarse vertices and
+	# produces cracks/overlaps while orbiting in the editor.
+	var safe_levels: int = maxi(1, clipmap_levels)
+	var coarsest_spacing: float = float(1 << (safe_levels - 1))
+	return Vector3(
+		roundf(camera_local.x / coarsest_spacing) * coarsest_spacing,
+		0.0,
+		roundf(camera_local.z / coarsest_spacing) * coarsest_spacing
+	)
 
 
 func _clear_levels() -> void:

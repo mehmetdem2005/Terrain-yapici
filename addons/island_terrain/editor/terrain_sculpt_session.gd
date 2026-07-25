@@ -4,27 +4,38 @@ class_name IslandTerrainSculptSession
 
 const TerrainNode = preload("res://addons/island_terrain/island_terrain_3d.gd")
 const Toolbar = preload("res://addons/island_terrain/editor/terrain_sculpt_toolbar.gd")
+const BrushPreview = preload("res://addons/island_terrain/editor/terrain_brush_preview.gd")
 const SculptCommand = preload("res://addons/island_terrain/application/terrain_sculpt_command.gd")
 const EditTransaction = preload("res://addons/island_terrain/application/terrain_edit_transaction.gd")
 
 var _toolbar: Toolbar
 var _undo_redo: EditorUndoRedoManager
+var _preview: BrushPreview
 var _terrain: TerrainNode
 var _stroke_transaction: EditTransaction
 var _is_stroking: bool = false
 var _last_dab_world: Vector3 = Vector3.INF
+var _last_hover_world: Vector3 = Vector3.INF
 var _last_dab_usec: int = 0
 var _flatten_target_height: float = 0.0
 
 
-func configure(toolbar: Toolbar, undo_redo: EditorUndoRedoManager) -> void:
+func configure(
+	toolbar: Toolbar,
+	undo_redo: EditorUndoRedoManager,
+	preview: BrushPreview
+) -> void:
 	_toolbar = toolbar
 	_undo_redo = undo_redo
+	_preview = preview
+	_toolbar.brush_settings_changed.connect(_refresh_preview)
+	_toolbar.tool_changed.connect(func(_tool: int) -> void: _refresh_preview())
 
 
 func set_terrain(terrain: TerrainNode) -> void:
 	finalize_stroke()
 	_terrain = terrain
+	_last_hover_world = Vector3.INF
 	if is_instance_valid(_toolbar) and is_instance_valid(_terrain):
 		_toolbar.set_terrain_name(_terrain.name)
 
@@ -32,6 +43,9 @@ func set_terrain(terrain: TerrainNode) -> void:
 func clear_terrain() -> void:
 	finalize_stroke()
 	_terrain = null
+	_last_hover_world = Vector3.INF
+	if is_instance_valid(_preview):
+		_preview.hide_preview()
 
 
 func route_input(camera: Camera3D, event: InputEvent) -> int:
@@ -47,6 +61,7 @@ func route_input(camera: Camera3D, event: InputEvent) -> int:
 			if touch.pressed:
 				finalize_stroke()
 			return EditorPlugin.AFTER_GUI_INPUT_PASS
+		_update_hover(camera, touch.position, touch.pressed)
 		if touch.pressed:
 			_begin_stroke(camera, touch.position)
 		else:
@@ -57,6 +72,7 @@ func route_input(camera: Camera3D, event: InputEvent) -> int:
 		var drag := event as InputEventScreenDrag
 		if drag.index > 0:
 			return EditorPlugin.AFTER_GUI_INPUT_PASS
+		_update_hover(camera, drag.position, _is_stroking)
 		if _is_stroking:
 			_apply_dab(camera, drag.position, false)
 			return EditorPlugin.AFTER_GUI_INPUT_STOP
@@ -66,6 +82,7 @@ func route_input(camera: Camera3D, event: InputEvent) -> int:
 		var button := event as InputEventMouseButton
 		if button.button_index != MOUSE_BUTTON_LEFT or button.alt_pressed:
 			return EditorPlugin.AFTER_GUI_INPUT_PASS
+		_update_hover(camera, button.position, button.pressed)
 		if button.pressed:
 			_begin_stroke(camera, button.position)
 		else:
@@ -74,6 +91,7 @@ func route_input(camera: Camera3D, event: InputEvent) -> int:
 
 	if event is InputEventMouseMotion:
 		var motion := event as InputEventMouseMotion
+		_update_hover(camera, motion.position, _is_stroking)
 		if _is_stroking and (motion.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
 			_apply_dab(camera, motion.position, false)
 			return EditorPlugin.AFTER_GUI_INPUT_STOP
@@ -83,11 +101,13 @@ func route_input(camera: Camera3D, event: InputEvent) -> int:
 
 func finalize_stroke() -> void:
 	if not _is_stroking:
+		_refresh_preview()
 		return
 	_is_stroking = false
 	if _stroke_transaction == null or _stroke_transaction.is_empty() \
 		or not is_instance_valid(_terrain):
 		_stroke_transaction = null
+		_refresh_preview()
 		return
 	_undo_redo.create_action(
 		_stroke_transaction.action_name,
@@ -105,8 +125,9 @@ func finalize_stroke() -> void:
 		_stroke_transaction
 	)
 	_undo_redo.commit_action(false)
-	_toolbar.set_message("Stroke kaydedildi · Geri Al kullanılabilir")
+	_toolbar.set_message("Stroke kaydedildi · Geri Al hazır")
 	_stroke_transaction = null
+	_refresh_preview()
 
 
 func undo() -> void:
@@ -128,6 +149,7 @@ func _begin_stroke(camera: Camera3D, screen_position: Vector2) -> void:
 	if hit.is_empty():
 		return
 	var hit_position: Vector3 = hit.get("position", Vector3.INF)
+	_last_hover_world = hit_position
 	if _toolbar.selected_tool() == SculptCommand.Tool.FLATTEN:
 		_flatten_target_height = _terrain.height_sample_from_world_y(hit_position.y)
 	_apply_hit(hit_position, true)
@@ -136,7 +158,9 @@ func _begin_stroke(camera: Camera3D, screen_position: Vector2) -> void:
 func _apply_dab(camera: Camera3D, screen_position: Vector2, force: bool) -> void:
 	var hit: Dictionary = _raycast_terrain(camera, screen_position)
 	if not hit.is_empty():
-		_apply_hit(hit.get("position", Vector3.INF), force)
+		var position: Vector3 = hit.get("position", Vector3.INF)
+		_last_hover_world = position
+		_apply_hit(position, force)
 
 
 func _apply_hit(hit_position: Vector3, force: bool) -> void:
@@ -157,6 +181,9 @@ func _apply_hit(hit_position: Vector3, force: bool) -> void:
 	command.strength = _toolbar.brush_strength()
 	command.falloff_exponent = _toolbar.falloff_exponent()
 	command.target_height_m = _flatten_target_height
+	command.noise_scale_m = _toolbar.noise_scale_m()
+	command.terrace_step_m = _toolbar.terrace_step_m()
+	command.random_seed = _toolbar.random_seed()
 	var dab_transaction: EditTransaction = _terrain.apply_sculpt_command(command)
 	if dab_transaction == null or dab_transaction.is_empty():
 		return
@@ -165,12 +192,43 @@ func _apply_hit(hit_position: Vector3, force: bool) -> void:
 		var rollback_error: Error = _terrain.apply_edit_transaction_before(dab_transaction)
 		if rollback_error != OK:
 			push_error("IT-025: Failed to roll back rejected sculpt dab")
-		_toolbar.set_message("Stroke bellek sınırına ulaştı; son dab geri alındı.")
+		_toolbar.set_message("Stroke bellek sınırına ulaştı; son dab geri alındı")
 		finalize_stroke()
 		return
 	_last_dab_world = hit_position
 	_last_dab_usec = now_usec
 	_toolbar.set_message("Düzenleniyor · %d KB undo" % (_stroke_transaction.memory_bytes() / 1024))
+	_refresh_preview()
+
+
+func _update_hover(camera: Camera3D, screen_position: Vector2, active: bool) -> void:
+	var hit: Dictionary = _raycast_terrain(camera, screen_position)
+	if hit.is_empty():
+		return
+	_last_hover_world = hit.get("position", Vector3.INF)
+	if _last_hover_world != Vector3.INF and is_instance_valid(_preview):
+		_preview.show_brush(
+			_last_hover_world,
+			_toolbar.brush_radius_m(),
+			_toolbar.falloff_exponent(),
+			_toolbar.brush_color(),
+			active
+		)
+
+
+func _refresh_preview() -> void:
+	if not is_instance_valid(_preview) or not is_instance_valid(_toolbar):
+		return
+	if not _toolbar.is_sculpt_enabled() or _last_hover_world == Vector3.INF:
+		_preview.hide_preview()
+		return
+	_preview.show_brush(
+		_last_hover_world,
+		_toolbar.brush_radius_m(),
+		_toolbar.falloff_exponent(),
+		_toolbar.brush_color(),
+		_is_stroking
+	)
 
 
 func _raycast_terrain(camera: Camera3D, screen_position: Vector2) -> Dictionary:

@@ -8,7 +8,9 @@ on:
     branches:
       - main
     paths:
+      - "addons/island_terrain/**"
       - "demo/**"
+      - "editor/**"
       - "project.godot"
       - ".github/workflows/package-test-demo.yml"
   workflow_dispatch:
@@ -44,8 +46,11 @@ jobs:
           ./godot --headless --path . --script addons/island_terrain/test/material_facade_test.gd
           ./godot --headless --path . --script addons/island_terrain/test/material_paint_facade_test.gd
 
-      - name: Validate demo scene
+      - name: Validate runtime demo scene
         run: ./godot --headless --path . --script demo/demo_smoke_test.gd
+
+      - name: Validate editor terrain and sculpt
+        run: ./godot --headless --path . --script demo/editor_tools_smoke_test.gd
 
       - name: Create project ZIP
         run: |

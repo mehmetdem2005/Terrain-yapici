@@ -1,6 +1,6 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=3 format=3]
 
-[ext_resource type="Script" path="res://addons/island_terrain/island_terrain_3d.gd" id="1_terrain"]
+[ext_resource type="Script" path="res://addons/island_terrain/editor/island_terrain_authoring_3d.gd" id="1_terrain"]
 
 [sub_resource type="Environment" id="Environment_editor"]
 background_mode = 1
@@ -9,20 +9,11 @@ ambient_light_source = 3
 ambient_light_color = Color(0.68, 0.76, 0.84, 1)
 ambient_light_energy = 0.8
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_marker"]
-albedo_color = Color(1, 0.25, 0.08, 1)
-roughness = 0.8
-
-[sub_resource type="SphereMesh" id="SphereMesh_marker"]
-material = SubResource("StandardMaterial3D_marker")
-radius = 8.0
-height = 16.0
-
 [node name="IslandTerrain3D" type="Node3D"]
 script = ExtResource("1_terrain")
-device_profile = 0
+device_profile = 3
 collision_enabled = false
-generate_preview_on_ready = true
+generate_preview_on_ready = false
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
 rotation_degrees = Vector3(-58, -32, 0)
@@ -31,15 +22,3 @@ shadow_enabled = false
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_editor")
-
-[node name="PreviewCamera" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.777146, 0.62932, 0, -0.62932, 0.777146, 0, 1400, 1700)
-current = true
-fov = 62.0
-near = 0.5
-far = 10000.0
-
-[node name="CenterMarker" type="MeshInstance3D" parent="."]
-position = Vector3(0, 8, 0)
-mesh = SubResource("SphereMesh_marker")
-cast_shadow = 0
